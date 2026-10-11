@@ -34,6 +34,9 @@ function startEngine() {
     engineProcess.on('exit', (code, signal) => {
       console.log(`[Cockpit Sidecar] Rust 串流引擎退出: code=${code}, signal=${signal}`);
       engineProcess = null;
+      setTimeout(() => {
+        if (!engineProcess) startEngine();
+      }, 1000);
     });
 
     engineProcess.on('error', (err) => {

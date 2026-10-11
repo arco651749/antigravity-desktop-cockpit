@@ -217,15 +217,36 @@ impl StreamServer {
                                 let res = self.arbiter.execute_mouse(
                                     hwnd_val, &source, &subaction, &button, u, v, delta,
                                 );
-                                if let Err(e) = res {
-                                    let resp = ServerEvent {
-                                        event: "input_rejected".into(),
-                                        status: "error".into(),
-                                        message: Some(e),
-                                        data: None,
-                                    };
-                                    let _ = ctrl_tx.send(serde_json::to_string(&resp)?).await;
+                                match res {
+                                    Ok(msg) => {
+                                        if subaction != "move" {
+                                            let resp = ServerEvent {
+                                                event: "input_ack".into(),
+                                                status: "ok".into(),
+                                                message: Some(msg),
+                                                data: None,
+                                            };
+                                            let _ = ctrl_tx.send(serde_json::to_string(&resp)?).await;
+                                        }
+                                    }
+                                    Err(e) => {
+                                        let resp = ServerEvent {
+                                            event: "input_rejected".into(),
+                                            status: "error".into(),
+                                            message: Some(e),
+                                            data: None,
+                                        };
+                                        let _ = ctrl_tx.send(serde_json::to_string(&resp)?).await;
+                                    }
                                 }
+                            } else {
+                                let resp = ServerEvent {
+                                    event: "input_rejected".into(),
+                                    status: "error".into(),
+                                    message: Some("尚未選取目標視窗，請先在上方選單選擇視窗".into()),
+                                    data: None,
+                                };
+                                let _ = ctrl_tx.send(serde_json::to_string(&resp)?).await;
                             }
                         }
                         Ok(ClientCommand::Key {
@@ -239,15 +260,34 @@ impl StreamServer {
                                 let res = self.arbiter.execute_key(
                                     hwnd_val, &source, &subaction, vk, char,
                                 );
-                                if let Err(e) = res {
-                                    let resp = ServerEvent {
-                                        event: "input_rejected".into(),
-                                        status: "error".into(),
-                                        message: Some(e),
-                                        data: None,
-                                    };
-                                    let _ = ctrl_tx.send(serde_json::to_string(&resp)?).await;
+                                match res {
+                                    Ok(msg) => {
+                                        let resp = ServerEvent {
+                                            event: "input_ack".into(),
+                                            status: "ok".into(),
+                                            message: Some(msg),
+                                            data: None,
+                                        };
+                                        let _ = ctrl_tx.send(serde_json::to_string(&resp)?).await;
+                                    }
+                                    Err(e) => {
+                                        let resp = ServerEvent {
+                                            event: "input_rejected".into(),
+                                            status: "error".into(),
+                                            message: Some(e),
+                                            data: None,
+                                        };
+                                        let _ = ctrl_tx.send(serde_json::to_string(&resp)?).await;
+                                    }
                                 }
+                            } else {
+                                let resp = ServerEvent {
+                                    event: "input_rejected".into(),
+                                    status: "error".into(),
+                                    message: Some("尚未選取目標視窗，請先在上方選單選擇視窗".into()),
+                                    data: None,
+                                };
+                                let _ = ctrl_tx.send(serde_json::to_string(&resp)?).await;
                             }
                         }
                         Err(e) => {

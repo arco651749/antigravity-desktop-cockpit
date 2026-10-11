@@ -1,5 +1,11 @@
 {
   "name": "antigravity-desktop-cockpit",
-  "description": "人機共生桌面駕駛艙：透過 GPU 零拷貝低延遲串流，在側邊欄直接操作 Blender、CAD、Chrome、Office 等軟體，支援人類第一優先接管與 AI Computer-Use 協同。",
-  "logo": "assets/logo.svg"
+  "displayName": "Desktop Cockpit",
+  "description": "人機共生桌面駕駛艙：透過 GPU 零拷貝低延遲串流，在側邊欄直接操作桌面軟體，支援人類第一優先接管與 AI Computer-Use 協同。",
+  "logo": "assets/logo.svg",
+  "version": "1.0.0",
+  "suggestedPrompts": [
+    "開啟 Desktop Cockpit",
+    "Open Desktop Cockpit"
+  ]
 }

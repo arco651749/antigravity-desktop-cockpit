@@ -20,6 +20,7 @@ let displayedFps = 30;
 let isDragging = false;
 let dragButton = 'left';
 let humanTimeout = null;
+let lastMoveTime = 0;
 
 function log(sender, text, type = 'sys') {
   const now = new Date();
@@ -61,8 +62,10 @@ function connectWebSocket() {
         const msg = JSON.parse(evt.data);
         if (msg.event === 'windows' && Array.isArray(msg.data)) {
           populateWindows(msg.data);
+        } else if (msg.event === 'input_ack') {
+          log('底層確認', msg.message || '輸入事件已成功投遞', 'sys');
         } else if (msg.event === 'input_rejected') {
-          log('仲裁拒絕', msg.message || '輸入被阻擋', 'agent');
+          log('輸入拒絕', msg.message || '輸入被阻擋', 'agent');
         }
       } catch (err) {
         console.error('JSON parse error:', err);
@@ -103,20 +106,46 @@ function connectWebSocket() {
 }
 
 function populateWindows(windows) {
+  const previousHwnd = localStorage.getItem('desktop_cockpit_selected_hwnd');
   windowSelect.innerHTML = '<option value="">-- 請選擇欲操作的視窗 --</option>';
+  let autoSelectHwnd = null;
+
   windows.forEach((w) => {
     const opt = document.createElement('option');
     opt.value = w.hwnd;
     opt.textContent = `${w.title} (${w.width}x${w.height})`;
     windowSelect.appendChild(opt);
+
+    if (previousHwnd && String(w.hwnd) === previousHwnd) {
+      autoSelectHwnd = w.hwnd;
+    }
   });
-  log('系統', `已載入 ${windows.len || windows.length} 個本機活動視窗`, 'sys');
+
+  // 若無先前紀錄，優先智慧預選 Notepad、Blender、KiCad 或第一個視窗
+  if (!autoSelectHwnd && windows.length > 0) {
+    const preferred = windows.find((w) => /notepad|記事本|blender|kicad/i.test(w.title)) || windows[0];
+    if (preferred) {
+      autoSelectHwnd = preferred.hwnd;
+    }
+  }
+
+  if (autoSelectHwnd) {
+    windowSelect.value = autoSelectHwnd;
+    localStorage.setItem('desktop_cockpit_selected_hwnd', autoSelectHwnd);
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ action: 'set_window', hwnd: autoSelectHwnd }));
+      log('視窗切換', `自動連結目標視窗 -> 0x${autoSelectHwnd.toString(16).toUpperCase()}`, 'sys');
+    }
+  }
+
+  log('系統', `已載入 ${windows.length} 個本機活動視窗`, 'sys');
 }
 
 // Window & FPS controls
 windowSelect.addEventListener('change', () => {
   const hwnd = parseInt(windowSelect.value, 10);
   if (hwnd && ws && ws.readyState === WebSocket.OPEN) {
+    localStorage.setItem('desktop_cockpit_selected_hwnd', hwnd);
     ws.send(JSON.stringify({ action: 'set_window', hwnd }));
     log('視窗切換', `切換目標視窗 HWND -> 0x${hwnd.toString(16).toUpperCase()}`, 'sys');
   }
@@ -151,6 +180,16 @@ btnEngineRestart.addEventListener('click', async () => {
 });
 
 // Human input interactions
+function createClickRipple(e, type = 'user') {
+  const ripple = document.createElement('div');
+  ripple.className = `click-ripple ripple-${type}`;
+  const rect = viewport.getBoundingClientRect();
+  ripple.style.left = `${e.clientX - rect.left}px`;
+  ripple.style.top = `${e.clientY - rect.top}px`;
+  viewport.appendChild(ripple);
+  setTimeout(() => ripple.remove(), 600);
+}
+
 function getNormalizedCoords(e) {
   const rect = canvas.getBoundingClientRect();
   const u = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
@@ -161,9 +200,20 @@ function getNormalizedCoords(e) {
 viewport.addEventListener('mousedown', (e) => {
   e.preventDefault();
   viewport.focus();
+
+  if (!windowSelect.value) {
+    log('系統警告', '⚠️ 請先在上方選單選擇欲控制的目標視窗！', 'agent');
+    windowSelect.focus();
+    windowSelect.classList.add('pulse-highlight');
+    setTimeout(() => windowSelect.classList.remove('pulse-highlight'), 1200);
+    return;
+  }
+
   isDragging = true;
   const btnMap = ['left', 'middle', 'right'];
   dragButton = btnMap[e.button] || 'left';
+
+  createClickRipple(e, 'user');
 
   const { u, v } = getNormalizedCoords(e);
   if (ws && ws.readyState === WebSocket.OPEN) {
@@ -198,21 +248,32 @@ window.addEventListener('mouseup', (e) => {
   }
 });
 
+viewport.addEventListener('mouseleave', () => {
+  if (isDragging) {
+    isDragging = false;
+    log('人類操作', '滑鼠移出畫布，重置拖曳狀態', 'sys');
+  }
+});
+
 viewport.addEventListener('mousemove', (e) => {
   const { u, v } = getNormalizedCoords(e);
   hudStat.textContent = `FPS: ${displayedFps} | 延遲: <15ms | 座標: (${u}, ${v})`;
 
   if (isDragging) {
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({
-        action: 'mouse',
-        source: 'user',
-        subaction: 'move',
-        button: dragButton,
-        u, v, delta: 0
-      }));
+    const now = performance.now();
+    if (now - lastMoveTime >= 16) {
+      lastMoveTime = now;
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+          action: 'mouse',
+          source: 'user',
+          subaction: 'move',
+          button: dragButton,
+          u, v, delta: 0
+        }));
+      }
+      setHumanActive(dragButton === 'middle' ? '中鍵 3D 視角旋轉' : '滑鼠拖曳軌跡');
     }
-    setHumanActive(dragButton === 'middle' ? '中鍵 3D 視角旋轉' : '滑鼠拖曳軌跡');
   }
 });
 

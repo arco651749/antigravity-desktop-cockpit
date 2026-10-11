@@ -1,17 +1,9 @@
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicIsize, AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
-use windows::Win32::Foundation::{GetLastError, HWND, LPARAM, POINT, RECT, WPARAM};
-use windows::Win32::Graphics::Gdi::ClientToScreen;
-use windows::Win32::UI::Input::KeyboardAndMouse::{
-    mouse_event, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT,
-    KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_LEFTDOWN,
-    MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE,
-    MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_WHEEL, MOUSEINPUT, VIRTUAL_KEY,
-};
-use windows::Win32::UI::WindowsAndMessaging::{
-    GetClientRect, GetSystemMetrics, PostMessageW, SetForegroundWindow, SM_CXSCREEN, SM_CYSCREEN,
-};
+use windows::Win32::Foundation::{BOOL, HWND, LPARAM, POINT, RECT, WPARAM};
+use windows::Win32::UI::WindowsAndMessaging::{GetWindowRect, PostMessageW};
 
+pub const WM_SETFOCUS: u32 = 0x0007;
 pub const WM_MOUSEMOVE: u32 = 0x0200;
 pub const WM_LBUTTONDOWN: u32 = 0x0201;
 pub const WM_LBUTTONUP: u32 = 0x0202;
@@ -19,18 +11,36 @@ pub const WM_RBUTTONDOWN: u32 = 0x0204;
 pub const WM_RBUTTONUP: u32 = 0x0205;
 pub const WM_MBUTTONDOWN: u32 = 0x0207;
 pub const WM_MBUTTONUP: u32 = 0x0208;
+pub const WM_MOUSEWHEEL: u32 = 0x020A;
 pub const WM_KEYDOWN: u32 = 0x0100;
 pub const WM_KEYUP: u32 = 0x0101;
 pub const WM_CHAR: u32 = 0x0102;
 
+pub const MK_LBUTTON: usize = 0x0001;
+pub const MK_RBUTTON: usize = 0x0002;
+pub const MK_MBUTTON: usize = 0x0010;
+
+#[link(name = "user32")]
+extern "system" {
+    fn ScreenToClient(hwnd: HWND, lppoint: *mut POINT) -> BOOL;
+    fn EnumChildWindows(
+        hwnd: HWND,
+        lpenumfunc: Option<unsafe extern "system" fn(HWND, LPARAM) -> BOOL>,
+        lparam: LPARAM,
+    ) -> BOOL;
+    fn IsWindowVisible(hwnd: HWND) -> BOOL;
+}
+
 pub struct InputArbiter {
     last_user_input_ms: AtomicU64,
+    last_clicked_child: AtomicIsize,
 }
 
 impl InputArbiter {
     pub fn new() -> Self {
         Self {
             last_user_input_ms: AtomicU64::new(0),
+            last_clicked_child: AtomicIsize::new(0),
         }
     }
 
@@ -52,6 +62,39 @@ impl InputArbiter {
         now.saturating_sub(last) >= lockout_ms
     }
 
+    unsafe fn find_deepest_child(&self, hwnd: HWND, screen_pt: POINT) -> HWND {
+        let mut r = RECT::default();
+        let _ = GetWindowRect(hwnd, &mut r);
+        let init_area = (r.right - r.left) * (r.bottom - r.top);
+
+        let mut data = (screen_pt, hwnd, init_area);
+        let ptr = &mut data as *mut (POINT, HWND, i32) as isize;
+
+        let _ = EnumChildWindows(hwnd, Some(Self::enum_child_cb), LPARAM(ptr));
+        data.1
+    }
+
+    unsafe extern "system" fn enum_child_cb(child: HWND, lparam: LPARAM) -> BOOL {
+        let data = &mut *(lparam.0 as *mut (POINT, HWND, i32));
+        if IsWindowVisible(child).as_bool() {
+            let mut r = RECT::default();
+            if GetWindowRect(child, &mut r).is_ok() {
+                if data.0.x >= r.left
+                    && data.0.x < r.right
+                    && data.0.y >= r.top
+                    && data.0.y < r.bottom
+                {
+                    let area = (r.right - r.left) * (r.bottom - r.top);
+                    if area > 0 && area <= data.2 {
+                        data.2 = area;
+                        data.1 = child;
+                    }
+                }
+            }
+        }
+        BOOL(1)
+    }
+
     pub fn execute_mouse(
         &self,
         hwnd_val: isize,
@@ -62,6 +105,7 @@ impl InputArbiter {
         v: f64,
         delta: i32,
     ) -> Result<String, String> {
+        crate::capture::ensure_default_desktop();
         let is_user = source.eq_ignore_ascii_case("user");
         if is_user {
             self.record_user_activity();
@@ -71,98 +115,73 @@ impl InputArbiter {
 
         unsafe {
             let hwnd = HWND(hwnd_val as *mut _);
-            let mut client_rect = RECT::default();
-            if GetClientRect(hwnd, &mut client_rect).is_err() {
-                return Err("無法獲取視窗 Client 區域".into());
+            let mut win_rect = RECT::default();
+            if GetWindowRect(hwnd, &mut win_rect).is_err() {
+                return Err("無法獲取視窗外框 RECT".into());
             }
 
-            let mut origin = POINT {
-                x: client_rect.left,
-                y: client_rect.top,
+            let width = (win_rect.right - win_rect.left) as f64;
+            let height = (win_rect.bottom - win_rect.top) as f64;
+
+            // 將 normalized (u, v) 映射至物理螢幕絕對座標
+            let screen_x = (win_rect.left as f64 + (u.clamp(0.0, 1.0) * width)).round() as i32;
+            let screen_y = (win_rect.top as f64 + (v.clamp(0.0, 1.0) * height)).round() as i32;
+            let screen_pt = POINT {
+                x: screen_x,
+                y: screen_y,
             };
-            let _ = ClientToScreen(hwnd, &mut origin);
 
-            let width = (client_rect.right - client_rect.left) as f64;
-            let height = (client_rect.bottom - client_rect.top) as f64;
+            // 尋找包含此物理座標點的最深層葉子控制項 (例如 Notepad 的 RichEditD2DPT)
+            let target_child = self.find_deepest_child(hwnd, screen_pt);
+            self.last_clicked_child
+                .store(target_child.0 as isize, Ordering::Relaxed);
 
-            let client_x = (u.clamp(0.0, 1.0) * width) as i32;
-            let client_y = (v.clamp(0.0, 1.0) * height) as i32;
+            // 將螢幕物理座標轉換為該目標子控制項的局部 Client 座標
+            let mut client_pt = screen_pt;
+            let _ = ScreenToClient(target_child, &mut client_pt);
 
-            let screen_x = origin.x as f64 + (u.clamp(0.0, 1.0) * width);
-            let screen_y = origin.y as f64 + (v.clamp(0.0, 1.0) * height);
+            let sub_x = client_pt.x;
+            let sub_y = client_pt.y;
+            let l_param = LPARAM(((sub_y as u16 as isize) << 16) | (sub_x as u16 as isize));
 
-            let screen_w = GetSystemMetrics(SM_CXSCREEN) as f64;
-            let screen_h = GetSystemMetrics(SM_CYSCREEN) as f64;
-
-            let abs_x = ((screen_x / screen_w) * 65535.0).round() as i32;
-            let abs_y = ((screen_y / screen_h) * 65535.0).round() as i32;
-
-            let mut flags = MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_MOVE;
-
-            match action {
-                "down" => match button {
-                    "right" => flags |= MOUSEEVENTF_RIGHTDOWN,
-                    "middle" => flags |= MOUSEEVENTF_MIDDLEDOWN,
-                    _ => flags |= MOUSEEVENTF_LEFTDOWN,
-                },
+            let (wm_msg, w_param) = match action {
+                "down" => {
+                    // 發送 WM_ACTIVATE 告知頂層視窗內部處於激活狀態，同時發送 WM_SETFOCUS 聚焦目標子控制項
+                    let _ = PostMessageW(hwnd, 0x0006 /* WM_ACTIVATE */, WPARAM(1 /* WA_ACTIVE */), LPARAM(0));
+                    let _ = PostMessageW(target_child, WM_SETFOCUS, WPARAM(0), LPARAM(0));
+                    match button {
+                        "right" => (WM_RBUTTONDOWN, WPARAM(MK_RBUTTON)),
+                        "middle" => (WM_MBUTTONDOWN, WPARAM(MK_MBUTTON)),
+                        _ => (WM_LBUTTONDOWN, WPARAM(MK_LBUTTON)),
+                    }
+                }
                 "up" => match button {
-                    "right" => flags |= MOUSEEVENTF_RIGHTUP,
-                    "middle" => flags |= MOUSEEVENTF_MIDDLEUP,
-                    _ => flags |= MOUSEEVENTF_LEFTUP,
+                    "right" => (WM_RBUTTONUP, WPARAM(0)),
+                    "middle" => (WM_MBUTTONUP, WPARAM(0)),
+                    _ => (WM_LBUTTONUP, WPARAM(0)),
                 },
                 "wheel" => {
-                    flags |= MOUSEEVENTF_WHEEL;
+                    let wp = ((delta as isize) << 16) as usize;
+                    (WM_MOUSEWHEEL, WPARAM(wp))
                 }
-                "move" => {}
-                _ => return Err(format!("未知的滑鼠動作: {}", action)),
-            }
-
-            let mouse_input = MOUSEINPUT {
-                dx: abs_x,
-                dy: abs_y,
-                mouseData: delta as u32,
-                dwFlags: flags,
-                time: 0,
-                dwExtraInfo: 0,
+                _ => {
+                    // 拖曳移動時保持按鈕按壓旗標 (如 Blender 中鍵 3D 旋轉)
+                    let mk = match button {
+                        "left" => MK_LBUTTON,
+                        "right" => MK_RBUTTON,
+                        "middle" => MK_MBUTTON,
+                        _ => 0,
+                    };
+                    (WM_MOUSEMOVE, WPARAM(mk))
+                }
             };
 
-            let input = INPUT {
-                r#type: INPUT_MOUSE,
-                Anonymous: INPUT_0 { mi: mouse_input },
-            };
-
-            if action == "down" {
-                let _ = SetForegroundWindow(hwnd);
-            }
-
-            // 1. 優先嘗試 Win32 SendInput
-            let sent = SendInput(&[input], std::mem::size_of::<INPUT>() as i32);
-            if sent == 0 {
-                let _err = GetLastError();
-                // 2. 若遇 UIPI 權限阻擋，自動回退調用 mouse_event
-                mouse_event(flags, abs_x, abs_y, delta, 0);
-
-                // 3. 額外輔助透過 PostMessage 直接注入目標視窗訊息佇列
-                let l_param = LPARAM(((client_y as isize) << 16) | (client_x as isize & 0xFFFF));
-                let wm_msg = match action {
-                    "down" => match button {
-                        "right" => WM_RBUTTONDOWN,
-                        "middle" => WM_MBUTTONDOWN,
-                        _ => WM_LBUTTONDOWN,
-                    },
-                    "up" => match button {
-                        "right" => WM_RBUTTONUP,
-                        "middle" => WM_MBUTTONUP,
-                        _ => WM_LBUTTONUP,
-                    },
-                    _ => WM_MOUSEMOVE,
-                };
-                let _ = PostMessageW(hwnd, wm_msg, WPARAM(0), l_param);
-            }
+            // 純背景靜默投遞：游標不跳躍、視窗不彈出！
+            let _ = PostMessageW(target_child, wm_msg, w_param, l_param);
 
             Ok(format!(
-                "滑鼠事件已注入: action={}, button={}, x={}, y={}",
-                action, button, screen_x as i32, screen_y as i32
+                "背景滑鼠投遞成功: HWND=0x{:X}, act={}, btn={}, x={}, y={}",
+                target_child.0 as usize, action, button, sub_x, sub_y
             ))
         }
     }
@@ -175,6 +194,7 @@ impl InputArbiter {
         vk_code: u16,
         unicode_char: Option<char>,
     ) -> Result<String, String> {
+        crate::capture::ensure_default_desktop();
         let is_user = source.eq_ignore_ascii_case("user");
         if is_user {
             self.record_user_activity();
@@ -183,54 +203,29 @@ impl InputArbiter {
         }
 
         unsafe {
-            let hwnd = HWND(hwnd_val as *mut _);
-            let _ = SetForegroundWindow(hwnd);
+            // 優先發送給最後點擊的子控制項 (如 RichEditD2DPT)，若無則發給主視窗
+            let last_child = self.last_clicked_child.load(Ordering::Relaxed);
+            let target = if last_child != 0 {
+                HWND(last_child as *mut _)
+            } else {
+                HWND(hwnd_val as *mut _)
+            };
 
             let is_up = action.eq_ignore_ascii_case("up");
 
-            let key_input = if let Some(ch) = unicode_char {
-                let mut flags = KEYEVENTF_UNICODE;
-                if is_up {
-                    flags |= KEYEVENTF_KEYUP;
-                }
-                KEYBDINPUT {
-                    wVk: VIRTUAL_KEY(0),
-                    wScan: ch as u16,
-                    dwFlags: flags,
-                    time: 0,
-                    dwExtraInfo: 0,
+            if let Some(ch) = unicode_char {
+                if !is_up {
+                    let _ = PostMessageW(target, WM_CHAR, WPARAM(ch as usize), LPARAM(0));
                 }
             } else {
-                let mut flags = windows::Win32::UI::Input::KeyboardAndMouse::KEYBD_EVENT_FLAGS(0);
-                if is_up {
-                    flags |= KEYEVENTF_KEYUP;
-                }
-                KEYBDINPUT {
-                    wVk: VIRTUAL_KEY(vk_code),
-                    wScan: 0,
-                    dwFlags: flags,
-                    time: 0,
-                    dwExtraInfo: 0,
-                }
-            };
-
-            let input = INPUT {
-                r#type: INPUT_KEYBOARD,
-                Anonymous: INPUT_0 { ki: key_input },
-            };
-
-            let sent = SendInput(&[input], std::mem::size_of::<INPUT>() as i32);
-            if sent == 0 {
-                // 回退至 PostMessage
-                if let Some(ch) = unicode_char {
-                    let _ = PostMessageW(hwnd, WM_CHAR, WPARAM(ch as usize), LPARAM(0));
-                } else {
-                    let msg = if is_up { WM_KEYUP } else { WM_KEYDOWN };
-                    let _ = PostMessageW(hwnd, msg, WPARAM(vk_code as usize), LPARAM(0));
-                }
+                let msg = if is_up { WM_KEYUP } else { WM_KEYDOWN };
+                let _ = PostMessageW(target, msg, WPARAM(vk_code as usize), LPARAM(0));
             }
 
-            Ok(format!("鍵盤事件已注入: action={}, vk={}", action, vk_code))
+            Ok(format!(
+                "背景按鍵投遞成功: Target=0x{:X}, act={}, vk={}",
+                target.0 as usize, action, vk_code
+            ))
         }
     }
 }

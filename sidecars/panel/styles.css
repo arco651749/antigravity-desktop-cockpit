@@ -196,3 +196,38 @@ select:hover, button:hover {
 .log-user { color: #4ade80; }
 .log-agent { color: #f87171; }
 .log-sys { color: #38bdf8; }
+
+/* Click Ripple Visual Feedback */
+.click-ripple {
+  position: absolute;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  pointer-events: none;
+  transform: translate(-50%, -50%) scale(0.2);
+  animation: ripple-anim 0.5s cubic-bezier(0.1, 0.8, 0.3, 1) forwards;
+  z-index: 100;
+}
+.ripple-user {
+  border: 2px solid #4ade80;
+  box-shadow: 0 0 14px rgba(74, 222, 128, 0.7);
+  background: rgba(74, 222, 128, 0.25);
+}
+.ripple-agent {
+  border: 2px solid #f87171;
+  box-shadow: 0 0 14px rgba(248, 113, 113, 0.7);
+  background: rgba(248, 113, 113, 0.25);
+}
+@keyframes ripple-anim {
+  0% { transform: translate(-50%, -50%) scale(0.2); opacity: 1; }
+  100% { transform: translate(-50%, -50%) scale(1.6); opacity: 0; }
+}
+
+.pulse-highlight {
+  animation: pulse-border 0.8s ease infinite;
+}
+@keyframes pulse-border {
+  0% { box-shadow: 0 0 0 0 rgba(234, 67, 53, 0.7); border-color: #ea4335; }
+  70% { box-shadow: 0 0 0 6px rgba(234, 67, 53, 0); border-color: #ea4335; }
+  100% { box-shadow: 0 0 0 0 rgba(234, 67, 53, 0); }
+}
