@@ -7,6 +7,10 @@ const modeSelect = document.getElementById('modeSelect');
 const fpsSelect = document.getElementById('fpsSelect');
 const btnRefresh = document.getElementById('btnRefresh');
 const btnEngineRestart = document.getElementById('btnEngineRestart');
+const btnDispatchVirtual = document.getElementById('btnDispatchVirtual');
+const btnRestorePrimary = document.getElementById('btnRestorePrimary');
+const virtualMonStatus = document.getElementById('virtualMonStatus');
+const virtualMonText = document.getElementById('virtualMonText');
 const arbiterStatus = document.getElementById('arbiterStatus');
 const arbiterText = document.getElementById('arbiterText');
 const hudStat = document.getElementById('hudStat');
@@ -22,6 +26,7 @@ let isDragging = false;
 let dragButton = 'left';
 let humanTimeout = null;
 let lastMoveTime = 0;
+let detectedVirtualMon = null;
 
 function log(sender, text, type = 'sys') {
   const now = new Date();
@@ -53,8 +58,9 @@ function connectWebSocket() {
   ws.binaryType = 'arraybuffer';
 
   ws.onopen = () => {
-    log('WebSocket', '成功連線至 Rust 引擎！正在請求視窗清單...', 'sys');
+    log('WebSocket', '成功連線至 Rust 引擎！正在查詢拓撲與視窗清單...', 'sys');
     ws.send(JSON.stringify({ action: 'get_windows' }));
+    ws.send(JSON.stringify({ action: 'get_monitors' }));
   };
 
   ws.onmessage = async (evt) => {
@@ -63,6 +69,22 @@ function connectWebSocket() {
         const msg = JSON.parse(evt.data);
         if (msg.event === 'windows' && Array.isArray(msg.data)) {
           populateWindows(msg.data);
+        } else if (msg.event === 'monitors' && Array.isArray(msg.data)) {
+          updateMonitors(msg.data);
+        } else if (msg.event === 'window_dispatched') {
+          if (msg.status === 'ok') {
+            log('虛擬派駐', msg.message || '視窗已派駐至虛擬螢幕', 'sys');
+            setVirtualBadgeActive(true, msg.data);
+          } else {
+            log('派駐失敗', msg.message || '無法派駐視窗', 'agent');
+          }
+        } else if (msg.event === 'window_restored') {
+          if (msg.status === 'ok') {
+            log('主螢幕回歸', msg.message || '視窗已移回主螢幕', 'sys');
+            setVirtualBadgeActive(false);
+          } else {
+            log('回歸失敗', msg.message || '無法移回主螢幕', 'agent');
+          }
         } else if (msg.event === 'input_ack') {
           log('底層確認', msg.message || '輸入事件已成功投遞', 'sys');
         } else if (msg.event === 'input_rejected') {
@@ -142,6 +164,58 @@ function populateWindows(windows) {
   log('系統', `已載入 ${windows.length} 個本機活動視窗`, 'sys');
 }
 
+function updateMonitors(monitors) {
+  detectedVirtualMon = monitors.find((m) => m.is_virtual_candidate);
+  if (detectedVirtualMon && virtualMonStatus) {
+    virtualMonStatus.className = 'status-pill status-virtual';
+    virtualMonText.textContent = `🟢 虛擬顯示器在線 (${detectedVirtualMon.width}x${detectedVirtualMon.height})`;
+    log('顯示拓撲', `檢測到虛擬螢幕: ${detectedVirtualMon.name} (${detectedVirtualMon.width}x${detectedVirtualMon.height} @ X=${detectedVirtualMon.x})`, 'sys');
+  } else if (virtualMonStatus) {
+    virtualMonStatus.className = 'status-pill status-idle';
+    virtualMonText.textContent = '⚪ 虛擬顯示器未啟用';
+  }
+}
+
+function setVirtualBadgeActive(active, monData) {
+  if (active && virtualMonStatus) {
+    virtualMonStatus.className = 'status-pill status-virtual-active';
+    const resText = monData ? `${monData.width}x${monData.height}` : '1024x768';
+    virtualMonText.textContent = `🛡️ 隔離派駐中 (${resText})`;
+  } else if (detectedVirtualMon && virtualMonStatus) {
+    virtualMonStatus.className = 'status-pill status-virtual';
+    virtualMonText.textContent = `🟢 虛擬顯示器在線 (${detectedVirtualMon.width}x${detectedVirtualMon.height})`;
+  }
+}
+
+// Virtual display dispatch & recall actions
+if (btnDispatchVirtual) {
+  btnDispatchVirtual.addEventListener('click', () => {
+    const hwnd = parseInt(windowSelect.value, 10);
+    if (!hwnd) {
+      log('警告', '請先選擇欲派駐的視窗', 'agent');
+      return;
+    }
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      log('調度', `正在派駐視窗 0x${hwnd.toString(16).toUpperCase()} 至虛擬第二螢幕...`, 'sys');
+      ws.send(JSON.stringify({ action: 'dispatch_to_virtual', hwnd }));
+    }
+  });
+}
+
+if (btnRestorePrimary) {
+  btnRestorePrimary.addEventListener('click', () => {
+    const hwnd = parseInt(windowSelect.value, 10);
+    if (!hwnd) {
+      log('警告', '請先選擇欲移回的視窗', 'agent');
+      return;
+    }
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      log('調度', `正在將視窗 0x${hwnd.toString(16).toUpperCase()} 移回主實體螢幕...`, 'sys');
+      ws.send(JSON.stringify({ action: 'restore_to_primary', hwnd }));
+    }
+  });
+}
+
 // Window & FPS controls
 windowSelect.addEventListener('change', () => {
   const hwnd = parseInt(windowSelect.value, 10);
@@ -152,14 +226,16 @@ windowSelect.addEventListener('change', () => {
   }
 });
 
-fpsSelect.addEventListener('change', () => {
-  const fps = parseInt(fpsSelect.value, 10);
-  currentFPS = fps;
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({ action: 'set_fps', fps }));
-    log('幀率時鐘', `切換為 ${fps} FPS 動態檔位`, 'sys');
-  }
-});
+if (fpsSelect) {
+  fpsSelect.addEventListener('change', () => {
+    const fps = parseInt(fpsSelect.value, 10);
+    currentFPS = fps;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ action: 'set_fps', fps }));
+      log('幀率時鐘', `切換為 ${fps} FPS 動態檔位`, 'sys');
+    }
+  });
+}
 
 // Mode controls & persistence
 const savedMode = localStorage.getItem('desktop_cockpit_input_mode');

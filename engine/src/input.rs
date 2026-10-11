@@ -11,7 +11,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     GetSystemMetrics, GetWindowRect, PostMessageW, SetForegroundWindow,
-    SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
+    SM_CXSCREEN, SM_CYSCREEN, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
 };
 
 pub const WM_SETFOCUS: u32 = 0x0007;
@@ -41,6 +41,7 @@ extern "system" {
     ) -> BOOL;
     fn IsWindowVisible(hwnd: HWND) -> BOOL;
     fn SetCursorPos(x: i32, y: i32) -> BOOL;
+    fn GetCursorPos(lppoint: *mut POINT) -> BOOL;
 }
 
 pub struct InputArbiter {
@@ -348,7 +349,11 @@ impl InputArbiter {
             let norm_x = (((screen_x - vx) * 65535) / vw) as i32;
             let norm_y = (((screen_y - vy) * 65535) / vh) as i32;
 
-            // 點擊前激活目標視窗並同步系統物理游標 (確保 WinUI 3 與標準控制項雙重捕獲)
+            // 記錄當前物理游標位置 (儲存使用者在實體主螢幕的滑鼠座標)
+            let mut host_cursor = POINT::default();
+            let has_host_cursor = GetCursorPos(&mut host_cursor).as_bool();
+
+            // 點擊前激活目標視窗並同步系統物理游標至目標點 (確保 WinUI 3 與標準控制項雙重捕獲)
             let _ = SetForegroundWindow(hwnd);
             let _ = SetCursorPos(screen_x, screen_y);
 
@@ -440,6 +445,20 @@ impl InputArbiter {
 
             if !inputs.is_empty() {
                 SendInput(&inputs, size_of::<INPUT>() as i32);
+            }
+
+            // 核心修復：游標復位時機
+            // 1. 若為按下 (down) 或移動 (move)，游標應維持在目標視窗內，讓 Chromium / WinUI 3 / 3D 軟體完整捕獲點擊
+            // 2. 僅在釋放 (up) 或滾輪 (wheel) 時，給予 15ms 讓目標應用訊息迴圈消化完畢後，才將物理游標無縫復位回主螢幕
+            if (action == "up" || action == "wheel") && has_host_cursor {
+                std::thread::sleep(Duration::from_millis(15));
+                let primary_w = GetSystemMetrics(SM_CXSCREEN);
+                let primary_h = GetSystemMetrics(SM_CYSCREEN);
+                if host_cursor.x >= 0 && host_cursor.x < primary_w && host_cursor.y >= 0 && host_cursor.y < primary_h {
+                    let _ = SetCursorPos(host_cursor.x, host_cursor.y);
+                } else {
+                    let _ = SetCursorPos(primary_w / 2, primary_h / 2);
+                }
             }
 
             Ok(format!(

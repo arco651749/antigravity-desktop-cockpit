@@ -1,5 +1,6 @@
 mod capture;
 mod input;
+mod monitor;
 mod server;
 
 use server::StreamServer;

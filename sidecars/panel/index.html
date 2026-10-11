@@ -20,6 +20,15 @@
       </div>
 
       <div class="tool-group">
+        <div id="virtualMonStatus" class="status-pill status-idle" style="font-size: 11px;" title="虛擬顯示器驅動硬體狀態">
+          <span class="dot"></span>
+          <span id="virtualMonText">虛擬螢幕: 檢測中</span>
+        </div>
+        <button id="btnDispatchVirtual" class="btn-primary" title="將當前視窗派駐至虛擬第二螢幕，徹底隔離防止覆蓋 Antigravity IDE">🚀 派駐虛擬螢幕</button>
+        <button id="btnRestorePrimary" class="btn-secondary" title="將視窗移回主實體螢幕">⬅️ 移回主螢幕</button>
+      </div>
+
+      <div class="tool-group">
         <span style="color: #60a5fa; font-weight: 600; font-size: 11px;">模式:</span>
         <select id="modeSelect" title="切換直通模式 (RustDesk SendInput) 或背景模式 (Win32 PostMessage)">
           <option value="direct" selected>⚡ 直通模式 (RustDesk 原理)</option>
@@ -30,11 +39,11 @@
       <div class="tool-group">
         <span style="color: var(--text-muted); font-size: 11px;">幀率:</span>
         <select id="fpsSelect">
-          <option value="60">⚡ 60 FPS (極速旋轉)</option>
-          <option value="30" selected>🌿 30 FPS (平衡)</option>
-          <option value="5">💤 5 FPS (節能)</option>
+          <option value="60">⚡ 60 FPS</option>
+          <option value="30" selected>🌿 30 FPS</option>
+          <option value="5">💤 5 FPS</option>
         </select>
-        <button id="btnEngineRestart" title="重啟底層串流引擎">⚡ 重啟引擎</button>
+        <button id="btnEngineRestart" title="重啟底層串流引擎">⚡ 重啟</button>
       </div>
     </div>
 

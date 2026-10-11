@@ -75,10 +75,33 @@ select:hover, button:hover {
   background: #1e3a8a;
   border-color: var(--accent-blue);
   color: #93c5fd;
+  font-weight: 600;
 }
 .btn-primary:hover {
   background: var(--accent-blue);
   color: #ffffff;
+}
+
+.btn-secondary {
+  background: #1e293b;
+  border-color: #334155;
+  color: #cbd5e1;
+}
+.btn-secondary:hover {
+  background: #334155;
+  color: #ffffff;
+}
+
+.status-virtual {
+  background: rgba(14, 165, 233, 0.15);
+  color: #38bdf8;
+  border: 1px solid rgba(56, 189, 248, 0.3);
+}
+
+.status-virtual-active {
+  background: rgba(16, 185, 129, 0.15);
+  color: #34d399;
+  border: 1px solid rgba(52, 211, 153, 0.4);
 }
 
 /* Arbiter status banner */
