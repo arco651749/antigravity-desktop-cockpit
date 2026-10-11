@@ -20,6 +20,14 @@
       </div>
 
       <div class="tool-group">
+        <span style="color: #60a5fa; font-weight: 600; font-size: 11px;">模式:</span>
+        <select id="modeSelect" title="切換直通模式 (RustDesk SendInput) 或背景模式 (Win32 PostMessage)">
+          <option value="direct" selected>⚡ 直通模式 (RustDesk 原理)</option>
+          <option value="background">🌿 背景模式 (靜默無干擾)</option>
+        </select>
+      </div>
+
+      <div class="tool-group">
         <span style="color: var(--text-muted); font-size: 11px;">幀率:</span>
         <select id="fpsSelect">
           <option value="60">⚡ 60 FPS (極速旋轉)</option>

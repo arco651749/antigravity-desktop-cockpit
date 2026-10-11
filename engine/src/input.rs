@@ -1,7 +1,18 @@
+use std::mem::size_of;
 use std::sync::atomic::{AtomicIsize, AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use windows::Win32::Foundation::{BOOL, HWND, LPARAM, POINT, RECT, WPARAM};
-use windows::Win32::UI::WindowsAndMessaging::{GetWindowRect, PostMessageW};
+use windows::Win32::UI::Input::KeyboardAndMouse::{
+    SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT,
+    KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_LEFTDOWN,
+    MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE,
+    MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_VIRTUALDESK, MOUSEEVENTF_WHEEL,
+    MOUSEINPUT, VIRTUAL_KEY,
+};
+use windows::Win32::UI::WindowsAndMessaging::{
+    GetSystemMetrics, GetWindowRect, PostMessageW, SetForegroundWindow,
+    SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
+};
 
 pub const WM_SETFOCUS: u32 = 0x0007;
 pub const WM_MOUSEMOVE: u32 = 0x0200;
@@ -29,6 +40,7 @@ extern "system" {
         lparam: LPARAM,
     ) -> BOOL;
     fn IsWindowVisible(hwnd: HWND) -> BOOL;
+    fn SetCursorPos(x: i32, y: i32) -> BOOL;
 }
 
 pub struct InputArbiter {
@@ -193,6 +205,9 @@ impl InputArbiter {
         action: &str,
         vk_code: u16,
         unicode_char: Option<char>,
+        ctrl: bool,
+        alt: bool,
+        shift: bool,
     ) -> Result<String, String> {
         crate::capture::ensure_default_desktop();
         let is_user = source.eq_ignore_ascii_case("user");
@@ -203,28 +218,391 @@ impl InputArbiter {
         }
 
         unsafe {
-            // 優先發送給最後點擊的子控制項 (如 RichEditD2DPT)，若無則發給主視窗
             let last_child = self.last_clicked_child.load(Ordering::Relaxed);
             let target = if last_child != 0 {
                 HWND(last_child as *mut _)
             } else {
                 HWND(hwnd_val as *mut _)
             };
+            let root = HWND(hwnd_val as *mut _);
 
             let is_up = action.eq_ignore_ascii_case("up");
 
+            // 1. Alt 系統組合鍵處理 (例如 Alt+F 展開選單)
+            if alt && vk_code != 18 /* VK_MENU */ {
+                let lp = LPARAM(1 | (1 << 29) | if is_up { (1 << 30) | (1 << 31) } else { 0 });
+                let msg = if is_up { 0x0105 /* WM_SYSKEYUP */ } else { 0x0104 /* WM_SYSKEYDOWN */ };
+                let _ = PostMessageW(root, msg, WPARAM(vk_code as usize), lp);
+                if target != root {
+                    let _ = PostMessageW(target, msg, WPARAM(vk_code as usize), lp);
+                }
+                return Ok(format!("Alt 快捷鍵投遞: VK={}, act={}", vk_code, action));
+            }
+
+            // 2. Ctrl 快捷鍵處理 (Ctrl+A, Ctrl+C, Ctrl+V, Ctrl+Z, Ctrl+X, Ctrl+F 等)
+            if ctrl && vk_code != 17 /* VK_CONTROL */ {
+                if !is_up {
+                    match vk_code {
+                        65 => { // Ctrl+A (全選)
+                            let _ = PostMessageW(target, 0x00B1 /* EM_SETSEL */, WPARAM(0), LPARAM(-1));
+                            return Ok("Ctrl+A (全選) 投遞成功".into());
+                        }
+                        67 => { // Ctrl+C (複製)
+                            let _ = PostMessageW(target, 0x0301 /* WM_COPY */, WPARAM(0), LPARAM(0));
+                            return Ok("Ctrl+C (複製) 投遞成功".into());
+                        }
+                        86 => { // Ctrl+V (貼上)
+                            let _ = PostMessageW(target, 0x0302 /* WM_PASTE */, WPARAM(0), LPARAM(0));
+                            return Ok("Ctrl+V (貼上) 投遞成功".into());
+                        }
+                        88 => { // Ctrl+X (剪下)
+                            let _ = PostMessageW(target, 0x0300 /* WM_CUT */, WPARAM(0), LPARAM(0));
+                            return Ok("Ctrl+X (剪下) 投遞成功".into());
+                        }
+                        90 => { // Ctrl+Z (復原)
+                            let _ = PostMessageW(target, 0x0304 /* WM_UNDO */, WPARAM(0), LPARAM(0));
+                            return Ok("Ctrl+Z (復原) 投遞成功".into());
+                        }
+                        _ => {}
+                    }
+                }
+                // 發送底層 KEYDOWN 訊息
+                let msg = if is_up { WM_KEYUP } else { WM_KEYDOWN };
+                let _ = PostMessageW(target, msg, WPARAM(vk_code as usize), LPARAM(0));
+                let _ = PostMessageW(root, msg, WPARAM(vk_code as usize), LPARAM(0));
+
+                if !is_up && vk_code >= 65 && vk_code <= 90 {
+                    // Win32 標準控制碼 (Ctrl+A = 1, Ctrl+F = 6)
+                    let ctrl_ascii = (vk_code - 64) as usize;
+                    let _ = PostMessageW(target, WM_CHAR, WPARAM(ctrl_ascii), LPARAM(0));
+                }
+                return Ok(format!("Ctrl 快捷鍵投遞: VK={}, act={}", vk_code, action));
+            }
+
+            // 3. 一般文字輸入或功能鍵 (Enter, Backspace, Tab, 方向鍵, 純字母)
             if let Some(ch) = unicode_char {
                 if !is_up {
+                    let _ = PostMessageW(target, WM_KEYDOWN, WPARAM(vk_code as usize), LPARAM(0));
                     let _ = PostMessageW(target, WM_CHAR, WPARAM(ch as usize), LPARAM(0));
+                } else {
+                    let _ = PostMessageW(target, WM_KEYUP, WPARAM(vk_code as usize), LPARAM(0));
                 }
             } else {
                 let msg = if is_up { WM_KEYUP } else { WM_KEYDOWN };
                 let _ = PostMessageW(target, msg, WPARAM(vk_code as usize), LPARAM(0));
+
+                if !is_up {
+                    match vk_code {
+                        13 => { let _ = PostMessageW(target, WM_CHAR, WPARAM(13), LPARAM(0)); } // Enter
+                        8  => { let _ = PostMessageW(target, WM_CHAR, WPARAM(8), LPARAM(0)); }  // Backspace
+                        9  => { let _ = PostMessageW(target, WM_CHAR, WPARAM(9), LPARAM(0)); }  // Tab
+                        _ => {}
+                    }
+                }
             }
 
             Ok(format!(
                 "背景按鍵投遞成功: Target=0x{:X}, act={}, vk={}",
                 target.0 as usize, action, vk_code
+            ))
+        }
+    }
+
+    /// 直通模式 (Direct Mode - 參考 RustDesk 實作)
+    /// 透過 Windows 原生 SendInput API 進行核心級輸入直通，相容 WinUI 3 XAML、選單、分頁等所有應用
+    pub fn execute_mouse_direct(
+        &self,
+        hwnd_val: isize,
+        source: &str,
+        action: &str,
+        button: &str,
+        u: f64,
+        v: f64,
+        delta: i32,
+    ) -> Result<String, String> {
+        crate::capture::ensure_default_desktop();
+        let is_user = source.eq_ignore_ascii_case("user");
+        if is_user {
+            self.record_user_activity();
+        } else if !self.can_agent_act(1500) {
+            return Err("PAUSED_BY_USER: 人類正在操作中，AI 動作已禮讓暫停 1.5 秒".into());
+        }
+
+        unsafe {
+            let hwnd = HWND(hwnd_val as *mut _);
+            let mut r = RECT::default();
+            if GetWindowRect(hwnd, &mut r).is_err() {
+                return Err("無法獲取視窗外框 RECT".into());
+            }
+
+            let width = (r.right - r.left) as f64;
+            let height = (r.bottom - r.top) as f64;
+            let screen_x = (r.left as f64 + (u.clamp(0.0, 1.0) * width)).round() as i32;
+            let screen_y = (r.top as f64 + (v.clamp(0.0, 1.0) * height)).round() as i32;
+
+            // 換算虛擬多螢幕絕對座標 (RustDesk 規範)
+            let vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
+            let vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
+            let vw = GetSystemMetrics(SM_CXVIRTUALSCREEN).max(1);
+            let vh = GetSystemMetrics(SM_CYVIRTUALSCREEN).max(1);
+            let norm_x = (((screen_x - vx) * 65535) / vw) as i32;
+            let norm_y = (((screen_y - vy) * 65535) / vh) as i32;
+
+            // 點擊前激活目標視窗並同步系統物理游標 (確保 WinUI 3 與標準控制項雙重捕獲)
+            let _ = SetForegroundWindow(hwnd);
+            let _ = SetCursorPos(screen_x, screen_y);
+
+            let (dw_down, dw_up) = match button {
+                "right" => (MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP),
+                "middle" => (MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP),
+                _ => (MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP),
+            };
+
+            let mut inputs = Vec::new();
+
+            match action {
+                "down" => {
+                    // 移動至座標並按下
+                    inputs.push(INPUT {
+                        r#type: INPUT_MOUSE,
+                        Anonymous: INPUT_0 {
+                            mi: MOUSEINPUT {
+                                dx: norm_x,
+                                dy: norm_y,
+                                mouseData: 0,
+                                dwFlags: MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK,
+                                time: 0,
+                                dwExtraInfo: 0,
+                            },
+                        },
+                    });
+                    inputs.push(INPUT {
+                        r#type: INPUT_MOUSE,
+                        Anonymous: INPUT_0 {
+                            mi: MOUSEINPUT {
+                                dx: norm_x,
+                                dy: norm_y,
+                                mouseData: 0,
+                                dwFlags: dw_down,
+                                time: 0,
+                                dwExtraInfo: 0,
+                            },
+                        },
+                    });
+                }
+                "up" => {
+                    inputs.push(INPUT {
+                        r#type: INPUT_MOUSE,
+                        Anonymous: INPUT_0 {
+                            mi: MOUSEINPUT {
+                                dx: norm_x,
+                                dy: norm_y,
+                                mouseData: 0,
+                                dwFlags: dw_up | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK,
+                                time: 0,
+                                dwExtraInfo: 0,
+                            },
+                        },
+                    });
+                }
+                "move" => {
+                    inputs.push(INPUT {
+                        r#type: INPUT_MOUSE,
+                        Anonymous: INPUT_0 {
+                            mi: MOUSEINPUT {
+                                dx: norm_x,
+                                dy: norm_y,
+                                mouseData: 0,
+                                dwFlags: MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK,
+                                time: 0,
+                                dwExtraInfo: 0,
+                            },
+                        },
+                    });
+                }
+                "wheel" => {
+                    inputs.push(INPUT {
+                        r#type: INPUT_MOUSE,
+                        Anonymous: INPUT_0 {
+                            mi: MOUSEINPUT {
+                                dx: norm_x,
+                                dy: norm_y,
+                                mouseData: (delta * 120) as u32,
+                                dwFlags: MOUSEEVENTF_WHEEL,
+                                time: 0,
+                                dwExtraInfo: 0,
+                            },
+                        },
+                    });
+                }
+                _ => {}
+            }
+
+            if !inputs.is_empty() {
+                SendInput(&inputs, size_of::<INPUT>() as i32);
+            }
+
+            Ok(format!(
+                "直通模式滑鼠投遞成功: HWND=0x{:X}, act={}, btn={}, x={}, y={}",
+                hwnd.0 as usize, action, button, screen_x, screen_y
+            ))
+        }
+    }
+
+    /// 直通模式按鍵 (Direct Key Mode)
+    pub fn execute_key_direct(
+        &self,
+        hwnd_val: isize,
+        source: &str,
+        action: &str,
+        vk_code: u16,
+        unicode_char: Option<char>,
+        ctrl: bool,
+        alt: bool,
+        shift: bool,
+    ) -> Result<String, String> {
+        crate::capture::ensure_default_desktop();
+        let is_user = source.eq_ignore_ascii_case("user");
+        if is_user {
+            self.record_user_activity();
+        } else if !self.can_agent_act(1500) {
+            return Err("PAUSED_BY_USER: 人類正在操作中，AI 鍵盤動作暫停".into());
+        }
+
+        unsafe {
+            let hwnd = HWND(hwnd_val as *mut _);
+            let _ = SetForegroundWindow(hwnd);
+            let is_up = action.eq_ignore_ascii_case("up");
+
+            let mut inputs = Vec::new();
+
+            // 若非單獨按下修飾鍵本體，但在按下主鍵時檢測到組合鍵狀態，先確保修飾鍵在 Windows 佇列中處於按下狀態
+            if !is_up {
+                if ctrl && vk_code != 17 {
+                    inputs.push(INPUT {
+                        r#type: INPUT_KEYBOARD,
+                        Anonymous: INPUT_0 {
+                            ki: KEYBDINPUT {
+                                wVk: VIRTUAL_KEY(0x11), // VK_CONTROL
+                                wScan: 0,
+                                dwFlags: Default::default(),
+                                time: 0,
+                                dwExtraInfo: 0,
+                            },
+                        },
+                    });
+                }
+                if alt && vk_code != 18 {
+                    inputs.push(INPUT {
+                        r#type: INPUT_KEYBOARD,
+                        Anonymous: INPUT_0 {
+                            ki: KEYBDINPUT {
+                                wVk: VIRTUAL_KEY(0x12), // VK_MENU (Alt)
+                                wScan: 0,
+                                dwFlags: Default::default(),
+                                time: 0,
+                                dwExtraInfo: 0,
+                            },
+                        },
+                    });
+                }
+                if shift && vk_code != 16 {
+                    inputs.push(INPUT {
+                        r#type: INPUT_KEYBOARD,
+                        Anonymous: INPUT_0 {
+                            ki: KEYBDINPUT {
+                                wVk: VIRTUAL_KEY(0x10), // VK_SHIFT
+                                wScan: 0,
+                                dwFlags: Default::default(),
+                                time: 0,
+                                dwExtraInfo: 0,
+                            },
+                        },
+                    });
+                }
+            }
+
+            if let Some(ch) = unicode_char {
+                inputs.push(INPUT {
+                    r#type: INPUT_KEYBOARD,
+                    Anonymous: INPUT_0 {
+                        ki: KEYBDINPUT {
+                            wVk: VIRTUAL_KEY(0),
+                            wScan: ch as u16,
+                            dwFlags: KEYEVENTF_UNICODE | if is_up { KEYEVENTF_KEYUP } else { Default::default() },
+                            time: 0,
+                            dwExtraInfo: 0,
+                        },
+                    },
+                });
+            } else {
+                inputs.push(INPUT {
+                    r#type: INPUT_KEYBOARD,
+                    Anonymous: INPUT_0 {
+                        ki: KEYBDINPUT {
+                            wVk: VIRTUAL_KEY(vk_code),
+                            wScan: 0,
+                            dwFlags: if is_up { KEYEVENTF_KEYUP } else { Default::default() },
+                            time: 0,
+                            dwExtraInfo: 0,
+                        },
+                    },
+                });
+            }
+
+            // 釋放主要按鍵時，一併釋放對應的合成修飾鍵狀態，防呆避免卡鍵
+            if is_up {
+                if ctrl && vk_code != 17 {
+                    inputs.push(INPUT {
+                        r#type: INPUT_KEYBOARD,
+                        Anonymous: INPUT_0 {
+                            ki: KEYBDINPUT {
+                                wVk: VIRTUAL_KEY(0x11), // VK_CONTROL
+                                wScan: 0,
+                                dwFlags: KEYEVENTF_KEYUP,
+                                time: 0,
+                                dwExtraInfo: 0,
+                            },
+                        },
+                    });
+                }
+                if alt && vk_code != 18 {
+                    inputs.push(INPUT {
+                        r#type: INPUT_KEYBOARD,
+                        Anonymous: INPUT_0 {
+                            ki: KEYBDINPUT {
+                                wVk: VIRTUAL_KEY(0x12), // VK_MENU
+                                wScan: 0,
+                                dwFlags: KEYEVENTF_KEYUP,
+                                time: 0,
+                                dwExtraInfo: 0,
+                            },
+                        },
+                    });
+                }
+                if shift && vk_code != 16 {
+                    inputs.push(INPUT {
+                        r#type: INPUT_KEYBOARD,
+                        Anonymous: INPUT_0 {
+                            ki: KEYBDINPUT {
+                                wVk: VIRTUAL_KEY(0x10), // VK_SHIFT
+                                wScan: 0,
+                                dwFlags: KEYEVENTF_KEYUP,
+                                time: 0,
+                                dwExtraInfo: 0,
+                            },
+                        },
+                    });
+                }
+            }
+
+            if !inputs.is_empty() {
+                SendInput(&inputs, size_of::<INPUT>() as i32);
+            }
+
+            Ok(format!(
+                "直通模式按鍵投遞成功: HWND=0x{:X}, act={}, vk={}",
+                hwnd.0 as usize, action, vk_code
             ))
         }
     }

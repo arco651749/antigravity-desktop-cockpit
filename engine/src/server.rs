@@ -31,6 +31,8 @@ pub enum ClientCommand {
     Mouse {
         #[serde(default = "default_source")]
         source: String,
+        #[serde(default = "default_mode")]
+        mode: String,
         subaction: String,
         #[serde(default = "default_button")]
         button: String,
@@ -45,11 +47,19 @@ pub enum ClientCommand {
     Key {
         #[serde(default = "default_source")]
         source: String,
+        #[serde(default = "default_mode")]
+        mode: String,
         subaction: String,
         #[serde(default)]
         vk: u16,
         #[serde(default)]
         char: Option<char>,
+        #[serde(default)]
+        ctrl: bool,
+        #[serde(default)]
+        alt: bool,
+        #[serde(default)]
+        shift: bool,
     },
 }
 
@@ -58,6 +68,9 @@ fn default_source() -> String {
 }
 fn default_button() -> String {
     "left".to_string()
+}
+fn default_mode() -> String {
+    "direct".to_string()
 }
 
 #[derive(Debug, Serialize)]
@@ -206,6 +219,7 @@ impl StreamServer {
                         }
                         Ok(ClientCommand::Mouse {
                             source,
+                            mode,
                             subaction,
                             button,
                             u,
@@ -214,9 +228,15 @@ impl StreamServer {
                         }) => {
                             let hwnd_val = self.target_hwnd.load(Ordering::Relaxed);
                             if hwnd_val != 0 {
-                                let res = self.arbiter.execute_mouse(
-                                    hwnd_val, &source, &subaction, &button, u, v, delta,
-                                );
+                                let res = if mode.eq_ignore_ascii_case("background") {
+                                    self.arbiter.execute_mouse(
+                                        hwnd_val, &source, &subaction, &button, u, v, delta,
+                                    )
+                                } else {
+                                    self.arbiter.execute_mouse_direct(
+                                        hwnd_val, &source, &subaction, &button, u, v, delta,
+                                    )
+                                };
                                 match res {
                                     Ok(msg) => {
                                         if subaction != "move" {
@@ -251,15 +271,25 @@ impl StreamServer {
                         }
                         Ok(ClientCommand::Key {
                             source,
+                            mode,
                             subaction,
                             vk,
                             char,
+                            ctrl,
+                            alt,
+                            shift,
                         }) => {
                             let hwnd_val = self.target_hwnd.load(Ordering::Relaxed);
                             if hwnd_val != 0 {
-                                let res = self.arbiter.execute_key(
-                                    hwnd_val, &source, &subaction, vk, char,
-                                );
+                                let res = if mode.eq_ignore_ascii_case("background") {
+                                    self.arbiter.execute_key(
+                                        hwnd_val, &source, &subaction, vk, char, ctrl, alt, shift,
+                                    )
+                                } else {
+                                    self.arbiter.execute_key_direct(
+                                        hwnd_val, &source, &subaction, vk, char, ctrl, alt, shift,
+                                    )
+                                };
                                 match res {
                                     Ok(msg) => {
                                         let resp = ServerEvent {

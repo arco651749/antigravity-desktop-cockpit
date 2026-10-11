@@ -3,6 +3,7 @@ const canvas = document.getElementById('streamCanvas');
 const ctx = canvas.getContext('2d');
 const viewport = document.getElementById('viewport');
 const windowSelect = document.getElementById('windowSelect');
+const modeSelect = document.getElementById('modeSelect');
 const fpsSelect = document.getElementById('fpsSelect');
 const btnRefresh = document.getElementById('btnRefresh');
 const btnEngineRestart = document.getElementById('btnEngineRestart');
@@ -160,6 +161,24 @@ fpsSelect.addEventListener('change', () => {
   }
 });
 
+// Mode controls & persistence
+const savedMode = localStorage.getItem('desktop_cockpit_input_mode');
+if (savedMode && modeSelect) {
+  modeSelect.value = savedMode;
+}
+
+if (modeSelect) {
+  modeSelect.addEventListener('change', () => {
+    localStorage.setItem('desktop_cockpit_input_mode', modeSelect.value);
+    const modeName = modeSelect.value === 'direct' ? '⚡ 直通模式 (RustDesk SendInput)' : '🌿 背景模式 (Win32 PostMessage)';
+    log('模式切換', `切換為 ${modeName}`, 'sys');
+  });
+}
+
+function getMode() {
+  return modeSelect ? modeSelect.value : 'direct';
+}
+
 btnRefresh.addEventListener('click', () => {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({ action: 'get_windows' }));
@@ -220,6 +239,7 @@ viewport.addEventListener('mousedown', (e) => {
     ws.send(JSON.stringify({
       action: 'mouse',
       source: 'user',
+      mode: getMode(),
       subaction: 'down',
       button: dragButton,
       u, v, delta: 0
@@ -228,7 +248,7 @@ viewport.addEventListener('mousedown', (e) => {
 
   const btnLabels = { left: '左鍵點擊', middle: '中鍵 (Blender 旋轉)', right: '右鍵選單' };
   setHumanActive(btnLabels[dragButton]);
-  log('人類操作', `${btnLabels[dragButton]} 座標: (${u}, ${v})`, 'user');
+  log('人類操作', `${btnLabels[dragButton]} 座標: (${u}, ${v}) [${getMode()}]`, 'user');
 });
 
 window.addEventListener('mouseup', (e) => {
@@ -239,12 +259,13 @@ window.addEventListener('mouseup', (e) => {
       ws.send(JSON.stringify({
         action: 'mouse',
         source: 'user',
+        mode: getMode(),
         subaction: 'up',
         button: dragButton,
         u, v, delta: 0
       }));
     }
-    log('人類操作', `釋放 ${dragButton}`, 'user');
+    log('人類操作', `釋放 ${dragButton} [${getMode()}]`, 'user');
   }
 });
 
@@ -257,7 +278,7 @@ viewport.addEventListener('mouseleave', () => {
 
 viewport.addEventListener('mousemove', (e) => {
   const { u, v } = getNormalizedCoords(e);
-  hudStat.textContent = `FPS: ${displayedFps} | 延遲: <15ms | 座標: (${u}, ${v})`;
+  hudStat.textContent = `FPS: ${displayedFps} | 模式: ${getMode().toUpperCase()} | 座標: (${u}, ${v})`;
 
   if (isDragging) {
     const now = performance.now();
@@ -267,6 +288,7 @@ viewport.addEventListener('mousemove', (e) => {
         ws.send(JSON.stringify({
           action: 'mouse',
           source: 'user',
+          mode: getMode(),
           subaction: 'move',
           button: dragButton,
           u, v, delta: 0
@@ -285,13 +307,14 @@ viewport.addEventListener('wheel', (e) => {
     ws.send(JSON.stringify({
       action: 'mouse',
       source: 'user',
+      mode: getMode(),
       subaction: 'wheel',
       button: 'left',
       u, v, delta
     }));
   }
   setHumanActive('滾輪縮放/滾動');
-  log('人類操作', `滾輪滾動 delta=${delta}`, 'user');
+  log('人類操作', `滾輪滾動 delta=${delta} [${getMode()}]`, 'user');
 }, { passive: false });
 
 viewport.addEventListener('keydown', (e) => {
@@ -301,29 +324,56 @@ viewport.addEventListener('keydown', (e) => {
     return;
   }
   e.preventDefault();
+
+  const isCtrl = e.ctrlKey;
+  const isAlt = e.altKey;
+  const isShift = e.shiftKey;
+  const isModifierCombo = isCtrl || isAlt;
+  const char = (!isModifierCombo && e.key.length === 1) ? e.key : null;
+
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({
       action: 'key',
       source: 'user',
+      mode: getMode(),
       subaction: 'down',
       vk: e.keyCode,
-      char: e.key.length === 1 ? e.key : null
+      char: char,
+      ctrl: isCtrl,
+      alt: isAlt,
+      shift: isShift
     }));
   }
-  setHumanActive(`鍵入 ${e.key}`);
-  log('人類操作', `鍵盤按下: ${e.key} (VK: ${e.keyCode})`, 'user');
+
+  let label = e.key;
+  if (isCtrl && e.key !== 'Control') label = `Ctrl+${e.key.toUpperCase()}`;
+  if (isAlt && e.key !== 'Alt') label = `Alt+${e.key.toUpperCase()}`;
+  if (isShift && isCtrl && e.key !== 'Shift' && e.key !== 'Control') label = `Ctrl+Shift+${e.key.toUpperCase()}`;
+
+  setHumanActive(`快捷鍵 ${label}`);
+  log('人類操作', `鍵盤按下: ${label} (VK: ${e.keyCode}) [${getMode()}]`, 'user');
 });
 
 viewport.addEventListener('keyup', (e) => {
   if (e.key !== 'Escape') {
     e.preventDefault();
+    const isCtrl = e.ctrlKey;
+    const isAlt = e.altKey;
+    const isShift = e.shiftKey;
+    const isModifierCombo = isCtrl || isAlt;
+    const char = (!isModifierCombo && e.key.length === 1) ? e.key : null;
+
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({
         action: 'key',
         source: 'user',
+        mode: getMode(),
         subaction: 'up',
         vk: e.keyCode,
-        char: e.key.length === 1 ? e.key : null
+        char: char,
+        ctrl: isCtrl,
+        alt: isAlt,
+        shift: isShift
       }));
     }
   }
