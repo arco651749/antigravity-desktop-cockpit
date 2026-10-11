@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Desktop Cockpit</title>
+  <link rel="stylesheet" href="/styles.css">
+  <script src="/preload.js"></script>
+</head>
+<body>
+  <div class="cockpit-app">
+    <!-- Top HUD Toolbar -->
+    <div class="toolbar">
+      <div class="tool-group">
+        <span style="font-weight: 700; color: #fff;">🖥️ 視窗:</span>
+        <select id="windowSelect">
+          <option value="">載入視窗中...</option>
+        </select>
+        <button id="btnRefresh" title="重新列舉視窗">🔄 刷新</button>
+      </div>
+
+      <div class="tool-group">
+        <span style="color: var(--text-muted); font-size: 11px;">幀率:</span>
+        <select id="fpsSelect">
+          <option value="60">⚡ 60 FPS (極速旋轉)</option>
+          <option value="30" selected>🌿 30 FPS (平衡)</option>
+          <option value="5">💤 5 FPS (節能)</option>
+        </select>
+        <button id="btnEngineRestart" title="重啟底層串流引擎">⚡ 重啟引擎</button>
+      </div>
+    </div>
+
+    <!-- Arbiter Status Banner -->
+    <div class="arbiter-banner">
+      <div style="display: flex; align-items: center; gap: 8px;">
+        <span>控制權:</span>
+        <div id="arbiterStatus" class="status-pill status-idle">
+          <span class="dot"></span>
+          <span id="arbiterText">待機 (隨時接受人類或 AI 操作)</span>
+        </div>
+      </div>
+      <div style="color: var(--text-muted);">
+        提示: 畫布內直接支援左/中/右鍵拖曳 (Blender 旋轉)、滾輪與按鍵穿透
+      </div>
+    </div>
+
+    <!-- Streaming Canvas Viewport -->
+    <div class="viewport-wrapper" id="viewport" tabindex="0">
+      <canvas id="streamCanvas"></canvas>
+      <div class="hud-stat" id="hudStat">
+        FPS: -- | 延遲: -- ms | 座標: (0.000, 0.000)
+      </div>
+      <div class="focus-badge" id="focusBadge">
+        🔘 點擊畫布捕捉鍵盤輸入 (按 Esc 釋放焦點回到聊天室)
+      </div>
+    </div>
+
+    <!-- Live Event Console -->
+    <div class="console-pane" id="consoleLogs">
+      <div class="log-entry">
+        <span class="log-time">[系統]</span>
+        <span class="log-sys">Antigravity Desktop Cockpit 駕駛艙初始化中...</span>
+      </div>
+    </div>
+  </div>
+
+  <script src="/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,198 @@
+:root {
+  --bg-base: #12131a;
+  --bg-card: #181924;
+  --bg-surface: #222536;
+  --border-color: #2e3247;
+  --accent-blue: #4285f4;
+  --accent-green: #34a853;
+  --accent-red: #ea4335;
+  --accent-yellow: #fbbc05;
+  --text-main: #f1f5f9;
+  --text-muted: #94a3b8;
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  user-select: none;
+}
+
+body {
+  background: var(--bg-base);
+  color: var(--text-main);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  font-size: 13px;
+  line-height: 1.4;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.cockpit-app {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  width: 100%;
+}
+
+/* Toolbar */
+.toolbar {
+  background: var(--bg-card);
+  border-bottom: 1px solid var(--border-color);
+  padding: 8px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.tool-group {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+select, button {
+  background: var(--bg-surface);
+  color: var(--text-main);
+  border: 1px solid var(--border-color);
+  padding: 5px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+  outline: none;
+  transition: all 0.15s ease;
+}
+
+select:hover, button:hover {
+  border-color: var(--accent-blue);
+}
+
+.btn-primary {
+  background: #1e3a8a;
+  border-color: var(--accent-blue);
+  color: #93c5fd;
+}
+.btn-primary:hover {
+  background: var(--accent-blue);
+  color: #ffffff;
+}
+
+/* Arbiter status banner */
+.arbiter-banner {
+  background: #0f172a;
+  border-bottom: 1px solid var(--border-color);
+  padding: 5px 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 11px;
+}
+
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 8px;
+  border-radius: 12px;
+  font-weight: 600;
+}
+
+.status-human {
+  background: rgba(52, 168, 83, 0.15);
+  color: #4ade80;
+  border: 1px solid rgba(74, 222, 128, 0.3);
+}
+
+.status-ai {
+  background: rgba(234, 67, 53, 0.15);
+  color: #f87171;
+  border: 1px solid rgba(248, 113, 113, 0.3);
+}
+
+.status-idle {
+  background: rgba(148, 163, 184, 0.15);
+  color: #cbd5e1;
+  border: 1px solid rgba(203, 213, 225, 0.2);
+}
+
+.dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+/* Viewport area */
+.viewport-wrapper {
+  position: relative;
+  flex: 1;
+  background: #08090e;
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  cursor: crosshair;
+  outline: none;
+}
+
+#streamCanvas {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+  display: block;
+}
+
+/* HUD Overlay */
+.hud-stat {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  background: rgba(18, 19, 26, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  backdrop-filter: blur(4px);
+  padding: 4px 8px;
+  border-radius: 5px;
+  font-size: 11px;
+  font-family: monospace;
+  color: #38bdf8;
+  pointer-events: none;
+}
+
+.focus-badge {
+  position: absolute;
+  bottom: 10px;
+  left: 10px;
+  background: rgba(18, 19, 26, 0.85);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  color: var(--text-muted);
+  pointer-events: none;
+}
+
+/* Bottom logs */
+.console-pane {
+  background: #11121b;
+  border-top: 1px solid var(--border-color);
+  padding: 6px 12px;
+  font-family: "Cascadia Code", Consolas, monospace;
+  font-size: 11px;
+  color: #94a3b8;
+  height: 80px;
+  overflow-y: auto;
+}
+
+.log-entry {
+  margin-bottom: 2px;
+  display: flex;
+  gap: 8px;
+}
+.log-time { color: #64748b; }
+.log-user { color: #4ade80; }
+.log-agent { color: #f87171; }
+.log-sys { color: #38bdf8; }
