@@ -1,6 +1,9 @@
 use crate::capture::{WindowCapturer, WindowEnumerator};
+use crate::composite_capture::SecretDesktopCapturer;
+use crate::desktop::{DesktopManager, DEFAULT_SECRET_DESKTOP};
 use crate::input::InputArbiter;
 use crate::monitor::MonitorManager;
+use crate::uia::{UIAEngine, VisualMemory};
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
@@ -19,11 +22,47 @@ pub struct StreamServer {
     pub frame_tx: broadcast::Sender<Arc<Vec<u8>>>,
     pub last_frame: Arc<std::sync::RwLock<Option<Arc<Vec<u8>>>>>,
     pub needs_refresh: Arc<AtomicBool>,
+    pub capture_mode: Arc<std::sync::RwLock<String>>,
+    pub isolated_pid: Arc<AtomicU32>,
+    pub isolated_desktop: Arc<std::sync::RwLock<String>>,
+    pub uia: Arc<UIAEngine>,
+    pub visual_memory: Arc<VisualMemory>,
 }
 
 #[derive(Debug, Deserialize)]
 #[serde(tag = "action")]
 pub enum ClientCommand {
+    #[serde(rename = "launch_isolated")]
+    LaunchIsolated {
+        #[serde(default)]
+        app: Option<String>,
+        #[serde(default)]
+        args: Option<Vec<String>>,
+    },
+    #[serde(rename = "get_isolated_windows")]
+    GetIsolatedWindows,
+    #[serde(rename = "get_uia_tree")]
+    GetUIATree {
+        #[serde(default)]
+        hwnd: Option<isize>,
+        #[serde(default)]
+        depth: Option<usize>,
+    },
+    #[serde(rename = "uia_invoke")]
+    UIAInvoke {
+        #[serde(default)]
+        hwnd: Option<isize>,
+        name: String,
+    },
+    #[serde(rename = "get_visual_diff")]
+    GetVisualDiff,
+    #[serde(rename = "set_capture_mode")]
+    SetCaptureMode { mode: String },
+    #[serde(rename = "kill_isolated_app")]
+    KillIsolatedApp {
+        #[serde(default)]
+        pid: Option<u32>,
+    },
     #[serde(rename = "get_windows")]
     GetWindows,
     #[serde(rename = "get_monitors")]
@@ -70,6 +109,17 @@ pub enum ClientCommand {
         #[serde(default)]
         shift: bool,
     },
+    #[serde(rename = "type_text")]
+    TypeText {
+        text: String,
+        #[serde(default)]
+        hwnd: Option<isize>,
+    },
+    #[serde(rename = "close_window")]
+    CloseWindow {
+        #[serde(default)]
+        hwnd: Option<isize>,
+    },
 }
 
 fn default_source() -> String {
@@ -102,6 +152,60 @@ impl StreamServer {
             frame_tx,
             last_frame: Arc::new(std::sync::RwLock::new(None)),
             needs_refresh: Arc::new(AtomicBool::new(true)),
+            capture_mode: Arc::new(std::sync::RwLock::new("direct".to_string())),
+            isolated_pid: Arc::new(AtomicU32::new(0)),
+            isolated_desktop: Arc::new(std::sync::RwLock::new(DEFAULT_SECRET_DESKTOP.to_string())),
+            uia: Arc::new(UIAEngine::new().expect("UIAEngine 初始化失敗")),
+            visual_memory: Arc::new(VisualMemory::new()),
+        }
+    }
+
+    /// 智慧解析目標視窗 HWND：在隔離桌面中優先命中 #32770 模態彈窗，次之排除 IME/覆蓋層並鎖定最大面積之主視窗
+    pub fn resolve_target_hwnd(&self, explicit_hwnd: Option<isize>) -> isize {
+        if let Some(h) = explicit_hwnd {
+            if h != 0 {
+                return h;
+            }
+        }
+        let is_secret = *self.capture_mode.read().unwrap() == "secret_desktop";
+        if is_secret {
+            let desk_name = self.isolated_desktop.read().unwrap().clone();
+            let isolated_pid = self.isolated_pid.load(Ordering::Relaxed);
+            if let Ok(windows) = DesktopManager::list_windows_in_desktop(&desk_name) {
+                let mut filtered = windows;
+                if isolated_pid > 0 {
+                    let by_pid: Vec<_> = filtered.iter().filter(|w| w.pid == isolated_pid).cloned().collect();
+                    if !by_pid.is_empty() {
+                        filtered = by_pid;
+                    }
+                }
+
+                // 1. 優先回傳 #32770 模態彈窗 (如 Save As / Confirm 等)
+                if let Some(dlg) = filtered.iter().find(|w| w.class_name == "#32770") {
+                    return dlg.hwnd;
+                }
+
+                // 2. 過濾掉微軟輸入法/覆蓋層/無名透明小視窗 (如 UAC_InputIndicatorOverlayWnd, Default IME)
+                let mut usable: Vec<_> = filtered
+                    .into_iter()
+                    .filter(|w| {
+                        !w.class_name.starts_with("IME")
+                            && !w.class_name.starts_with("MSCTFIME")
+                            && !w.class_name.contains("Indicator")
+                            && w.width > 50
+                            && w.height > 50
+                    })
+                    .collect();
+
+                // 3. 面積由大到小排序，主視窗面積最大
+                usable.sort_by_key(|w| -(w.width as i64 * w.height as i64));
+                if let Some(main_win) = usable.first() {
+                    return main_win.hwnd;
+                }
+            }
+            0
+        } else {
+            self.target_hwnd.load(Ordering::Relaxed)
         }
     }
 
@@ -134,9 +238,9 @@ impl StreamServer {
     }
 
     fn capture_loop_thread(&self) {
-        crate::capture::ensure_default_desktop();
-        println!("[StreamEngine] 啟動專屬 OS 執行緒 DXGI 硬體擷取管線 (Affinity Pinned + DDA + Adaptive FPS)");
+        println!("[StreamEngine] 啟動專屬 OS 執行緒畫面擷取管線 (支援 Win32 隔離桌面與 DXGI 雙模式)");
         let mut capturer_opt: Option<WindowCapturer> = None;
+        let mut secret_capturer_opt: Option<SecretDesktopCapturer> = None;
         let mut idle_count: u32 = 0;
 
         loop {
@@ -146,61 +250,98 @@ impl StreamServer {
                 continue;
             }
 
-            let hwnd_val = self.target_hwnd.load(Ordering::Relaxed);
-            if hwnd_val == 0 {
-                std::thread::sleep(Duration::from_millis(100));
-                continue;
-            }
-
-            if capturer_opt.as_ref().map(|c| c.hwnd) != Some(hwnd_val) {
-                let capturer = WindowCapturer::new(hwnd_val);
-                // 優先使用初始化獲取的首張冷啟動影格立即廣播
-                if !capturer.last_jpeg.is_empty() {
-                    let frame = capturer.last_jpeg.clone();
-                    *self.last_frame.write().unwrap() = Some(frame.clone());
-                    let _ = self.frame_tx.send(frame);
-                }
-                capturer_opt = Some(capturer);
-                idle_count = 0;
-            }
-
+            let mode = self.capture_mode.read().unwrap().clone();
             let force_refresh = self.needs_refresh.swap(false, Ordering::Relaxed);
-            if force_refresh {
-                if let Some(c) = capturer_opt.as_mut() {
-                    c.invalidate();
-                }
-                idle_count = 0;
-            }
 
-            if let Some(capturer) = capturer_opt.as_mut() {
-                match capturer.capture_jpeg(75) {
-                    Ok(Some(frame_arc)) => {
-                        *self.last_frame.write().unwrap() = Some(frame_arc.clone());
-                        let _ = self.frame_tx.send(frame_arc);
-                        idle_count = 0;
-                    }
-                    Ok(None) => {
-                        // 畫面無變化：若處於強制重整或冷啟動尚未有任何發送，重送當前快取幀保證畫面不留白
-                        if force_refresh || self.last_frame.read().unwrap().is_none() {
-                            if !capturer.last_jpeg.is_empty() {
-                                let frame = capturer.last_jpeg.clone();
-                                *self.last_frame.write().unwrap() = Some(frame.clone());
-                                let _ = self.frame_tx.send(frame);
-                            }
+            if mode == "secret_desktop" {
+                let desk_name = self.isolated_desktop.read().unwrap().clone();
+                let pid = self.isolated_pid.load(Ordering::Relaxed);
+
+                let need_recreate = match secret_capturer_opt.as_ref() {
+                    Some(c) => c.desktop_name != desk_name || c.target_pid != pid,
+                    None => true,
+                };
+
+                if need_recreate {
+                    match SecretDesktopCapturer::new(&desk_name, pid) {
+                        Ok(capturer) => {
+                            secret_capturer_opt = Some(capturer);
+                            idle_count = 0;
                         }
-                        idle_count = idle_count.saturating_add(1);
+                        Err(_) => {
+                            std::thread::sleep(Duration::from_millis(150));
+                            continue;
+                        }
                     }
-                    Err(e) => {
-                        eprintln!("[StreamEngine] 擷取異常: {}", e);
-                        std::thread::sleep(Duration::from_millis(150));
-                        continue;
+                }
+
+                if let Some(capturer) = secret_capturer_opt.as_mut() {
+                    match capturer.capture_jpeg(75) {
+                        Ok(frame_arc) => {
+                            *self.last_frame.write().unwrap() = Some(frame_arc.clone());
+                            let _ = self.frame_tx.send(frame_arc);
+                            idle_count = 0;
+                        }
+                        Err(_) => {
+                            idle_count = idle_count.saturating_add(1);
+                        }
+                    }
+                }
+            } else {
+                crate::capture::ensure_default_desktop();
+                let hwnd_val = self.target_hwnd.load(Ordering::Relaxed);
+                if hwnd_val == 0 {
+                    std::thread::sleep(Duration::from_millis(100));
+                    continue;
+                }
+
+                if capturer_opt.as_ref().map(|c| c.hwnd) != Some(hwnd_val) {
+                    let capturer = WindowCapturer::new(hwnd_val);
+                    if !capturer.last_jpeg.is_empty() {
+                        let frame = capturer.last_jpeg.clone();
+                        *self.last_frame.write().unwrap() = Some(frame.clone());
+                        let _ = self.frame_tx.send(frame);
+                    }
+                    capturer_opt = Some(capturer);
+                    idle_count = 0;
+                }
+
+                if force_refresh {
+                    if let Some(c) = capturer_opt.as_mut() {
+                        c.invalidate();
+                    }
+                    idle_count = 0;
+                }
+
+                if let Some(capturer) = capturer_opt.as_mut() {
+                    match capturer.capture_jpeg(75) {
+                        Ok(Some(frame_arc)) => {
+                            *self.last_frame.write().unwrap() = Some(frame_arc.clone());
+                            let _ = self.frame_tx.send(frame_arc);
+                            idle_count = 0;
+                        }
+                        Ok(None) => {
+                            if force_refresh || self.last_frame.read().unwrap().is_none() {
+                                if !capturer.last_jpeg.is_empty() {
+                                    let frame = capturer.last_jpeg.clone();
+                                    *self.last_frame.write().unwrap() = Some(frame.clone());
+                                    let _ = self.frame_tx.send(frame);
+                                }
+                            }
+                            idle_count = idle_count.saturating_add(1);
+                        }
+                        Err(e) => {
+                            eprintln!("[StreamEngine] 擷取異常: {}", e);
+                            std::thread::sleep(Duration::from_millis(150));
+                            continue;
+                        }
                     }
                 }
             }
 
-            // 2. 自適應智慧調頻 (Adaptive FPS)
+            // 自適應智慧調頻
             let sleep_ms = if idle_count > 5 {
-                100
+                80
             } else {
                 let fps = self.target_fps.load(Ordering::Relaxed).clamp(1, 60);
                 1000 / fps as u64
@@ -260,6 +401,232 @@ impl StreamServer {
                 Ok(Message::Text(text)) => {
                     let cmd_res: Result<ClientCommand, _> = serde_json::from_str(&text);
                     match cmd_res {
+                        Ok(ClientCommand::LaunchIsolated { app, args }) => {
+                            let desk_name = self.isolated_desktop.read().unwrap().clone();
+                            let app_name = app.as_deref().unwrap_or("notepad++");
+                            let args_vec: Vec<&str> = args.as_ref().map(|v| v.iter().map(|s| s.as_str()).collect()).unwrap_or_default();
+
+                            let launch_res = if app_name.eq_ignore_ascii_case("notepad++") || app_name.eq_ignore_ascii_case("notepad") {
+                                DesktopManager::launch_notepad_plus_plus(&desk_name)
+                            } else {
+                                DesktopManager::launch_in_desktop(&desk_name, app_name, &args_vec)
+                            };
+
+                            match launch_res {
+                                Ok(pid) => {
+                                    self.isolated_pid.store(pid, Ordering::SeqCst);
+                                    *self.capture_mode.write().unwrap() = "secret_desktop".to_string();
+                                    self.needs_refresh.store(true, Ordering::Relaxed);
+                                    let resp = ServerEvent {
+                                        event: "app_launched".into(),
+                                        status: "ok".into(),
+                                        message: Some(format!("成功在隔離桌面 '{}' 啟動 (PID: {})", desk_name, pid)),
+                                        data: Some(serde_json::json!({
+                                            "pid": pid,
+                                            "desktop": desk_name,
+                                            "mode": "secret_desktop"
+                                        })),
+                                    };
+                                    let _ = ctrl_tx.send(serde_json::to_string(&resp)?).await;
+                                }
+                                Err(e) => {
+                                    let resp = ServerEvent {
+                                        event: "app_launched".into(),
+                                        status: "error".into(),
+                                        message: Some(e),
+                                        data: None,
+                                    };
+                                    let _ = ctrl_tx.send(serde_json::to_string(&resp)?).await;
+                                }
+                            }
+                        }
+                        Ok(ClientCommand::GetIsolatedWindows) => {
+                            let desk_name = self.isolated_desktop.read().unwrap().clone();
+                            match DesktopManager::list_windows_in_desktop(&desk_name) {
+                                Ok(wins) => {
+                                    let resp = ServerEvent {
+                                        event: "isolated_windows".into(),
+                                        status: "ok".into(),
+                                        message: None,
+                                        data: Some(serde_json::to_value(wins)?),
+                                    };
+                                    let _ = ctrl_tx.send(serde_json::to_string(&resp)?).await;
+                                }
+                                Err(e) => {
+                                    let resp = ServerEvent {
+                                        event: "isolated_windows".into(),
+                                        status: "error".into(),
+                                        message: Some(e),
+                                        data: None,
+                                    };
+                                    let _ = ctrl_tx.send(serde_json::to_string(&resp)?).await;
+                                }
+                            }
+                        }
+                        Ok(ClientCommand::GetUIATree { hwnd, depth }) => {
+                            let is_secret = *self.capture_mode.read().unwrap() == "secret_desktop";
+                            let desk_name = self.isolated_desktop.read().unwrap().clone();
+                            let target_hwnd = self.resolve_target_hwnd(hwnd);
+
+                            if target_hwnd != 0 {
+                                match self.uia.fetch_tree_from_hwnd(target_hwnd, depth.unwrap_or(4)) {
+                                    Ok(tree) => {
+                                        let wins = if is_secret {
+                                            DesktopManager::list_windows_in_desktop(&desk_name).unwrap_or_default()
+                                        } else {
+                                            WindowEnumerator::list_windows().into_iter().map(|w| crate::desktop::DesktopWindowInfo {
+                                                hwnd: w.hwnd,
+                                                pid: 0,
+                                                title: w.title,
+                                                class_name: String::new(),
+                                                width: w.width,
+                                                height: w.height,
+                                                x: 0,
+                                                y: 0,
+                                            }).collect()
+                                        };
+                                        let _ = self.visual_memory.record_step(wins, Some(tree.clone()));
+                                        let resp = ServerEvent {
+                                            event: "uia_tree".into(),
+                                            status: "ok".into(),
+                                            message: None,
+                                            data: Some(serde_json::to_value(tree)?),
+                                        };
+                                        let _ = ctrl_tx.send(serde_json::to_string(&resp)?).await;
+                                    }
+                                    Err(e) => {
+                                        let resp = ServerEvent {
+                                            event: "uia_tree".into(),
+                                            status: "error".into(),
+                                            message: Some(e),
+                                            data: None,
+                                        };
+                                        let _ = ctrl_tx.send(serde_json::to_string(&resp)?).await;
+                                    }
+                                }
+                            } else {
+                                let resp = ServerEvent {
+                                    event: "uia_tree".into(),
+                                    status: "error".into(),
+                                    message: Some("未找到可掃描的有效視窗 HWND".into()),
+                                    data: None,
+                                };
+                                let _ = ctrl_tx.send(serde_json::to_string(&resp)?).await;
+                            }
+                        }
+                        Ok(ClientCommand::UIAInvoke { hwnd, name }) => {
+                            let target_hwnd = self.resolve_target_hwnd(hwnd);
+
+                            if target_hwnd != 0 {
+                                match self.uia.invoke_element_by_name(target_hwnd, &name) {
+                                    Ok(invoked) => {
+                                        self.needs_refresh.store(true, Ordering::Relaxed);
+                                        let resp = ServerEvent {
+                                            event: "uia_invoked".into(),
+                                            status: if invoked { "ok".into() } else { "not_found".into() },
+                                            message: Some(format!("UIA Invoke('{}') 結果: {}", name, invoked)),
+                                            data: Some(serde_json::json!({ "invoked": invoked, "name": name })),
+                                        };
+                                        let _ = ctrl_tx.send(serde_json::to_string(&resp)?).await;
+                                    }
+                                    Err(e) => {
+                                        let resp = ServerEvent {
+                                            event: "uia_invoked".into(),
+                                            status: "error".into(),
+                                            message: Some(e),
+                                            data: None,
+                                        };
+                                        let _ = ctrl_tx.send(serde_json::to_string(&resp)?).await;
+                                    }
+                                }
+                            } else {
+                                let resp = ServerEvent {
+                                    event: "uia_invoked".into(),
+                                    status: "error".into(),
+                                    message: Some("未找到目標視窗 HWND".into()),
+                                    data: None,
+                                };
+                                let _ = ctrl_tx.send(serde_json::to_string(&resp)?).await;
+                            }
+                        }
+                        Ok(ClientCommand::GetVisualDiff) => {
+                            let is_secret = *self.capture_mode.read().unwrap() == "secret_desktop";
+                            let desk_name = self.isolated_desktop.read().unwrap().clone();
+                            let wins = if is_secret {
+                                DesktopManager::list_windows_in_desktop(&desk_name).unwrap_or_default()
+                            } else {
+                                WindowEnumerator::list_windows().into_iter().map(|w| crate::desktop::DesktopWindowInfo {
+                                    hwnd: w.hwnd,
+                                    pid: 0,
+                                    title: w.title,
+                                    class_name: String::new(),
+                                    width: w.width,
+                                    height: w.height,
+                                    x: 0,
+                                    y: 0,
+                                }).collect()
+                            };
+                            let target_hwnd = self.resolve_target_hwnd(None);
+                            let tree = if target_hwnd != 0 {
+                                self.uia.fetch_tree_from_hwnd(target_hwnd, 3).ok()
+                            } else {
+                                None
+                            };
+                            let _ = self.visual_memory.record_step(wins, tree);
+                            let diff = self.visual_memory.compute_diff_with_previous();
+                            let resp = ServerEvent {
+                                event: "visual_diff".into(),
+                                status: "ok".into(),
+                                message: None,
+                                data: Some(serde_json::to_value(diff)?),
+                            };
+                            let _ = ctrl_tx.send(serde_json::to_string(&resp)?).await;
+                        }
+                        Ok(ClientCommand::SetCaptureMode { mode }) => {
+                            *self.capture_mode.write().unwrap() = mode.clone();
+                            self.needs_refresh.store(true, Ordering::Relaxed);
+                            let resp = ServerEvent {
+                                event: "capture_mode_set".into(),
+                                status: "ok".into(),
+                                message: Some(format!("擷取模式已設定為: {}", mode)),
+                                data: Some(serde_json::json!({ "mode": mode })),
+                            };
+                            let _ = ctrl_tx.send(serde_json::to_string(&resp)?).await;
+                        }
+                        Ok(ClientCommand::KillIsolatedApp { pid }) => {
+                            let target_pid = pid.unwrap_or_else(|| self.isolated_pid.load(Ordering::Relaxed));
+                            if target_pid > 0 {
+                                match DesktopManager::kill_process(target_pid) {
+                                    Ok(_) => {
+                                        self.isolated_pid.store(0, Ordering::SeqCst);
+                                        let resp = ServerEvent {
+                                            event: "app_killed".into(),
+                                            status: "ok".into(),
+                                            message: Some(format!("進程 PID {} 已結束", target_pid)),
+                                            data: None,
+                                        };
+                                        let _ = ctrl_tx.send(serde_json::to_string(&resp)?).await;
+                                    }
+                                    Err(e) => {
+                                        let resp = ServerEvent {
+                                            event: "app_killed".into(),
+                                            status: "error".into(),
+                                            message: Some(e),
+                                            data: None,
+                                        };
+                                        let _ = ctrl_tx.send(serde_json::to_string(&resp)?).await;
+                                    }
+                                }
+                            } else {
+                                let resp = ServerEvent {
+                                    event: "app_killed".into(),
+                                    status: "error".into(),
+                                    message: Some("未指定目標 PID".into()),
+                                    data: None,
+                                };
+                                let _ = ctrl_tx.send(serde_json::to_string(&resp)?).await;
+                            }
+                        }
                         Ok(ClientCommand::GetWindows) => {
                             let windows = WindowEnumerator::list_windows();
                             let resp = ServerEvent {
@@ -281,6 +648,7 @@ impl StreamServer {
                             let _ = ctrl_tx.send(serde_json::to_string(&resp)?).await;
                         }
                         Ok(ClientCommand::DispatchToVirtual { hwnd }) => {
+                            *self.capture_mode.write().unwrap() = "direct".to_string();
                             match MonitorManager::dispatch_to_virtual(hwnd) {
                                 Ok(mon) => {
                                     self.target_hwnd.store(hwnd, Ordering::SeqCst);
@@ -327,6 +695,7 @@ impl StreamServer {
                             }
                         }
                         Ok(ClientCommand::SetWindow { hwnd }) => {
+                            *self.capture_mode.write().unwrap() = "direct".to_string();
                             unsafe {
                                 let h = windows::Win32::Foundation::HWND(hwnd as *mut _);
                                 let _ = windows::Win32::UI::WindowsAndMessaging::ShowWindow(
@@ -368,15 +737,49 @@ impl StreamServer {
                             v,
                             delta,
                         }) => {
-                            let hwnd_val = self.target_hwnd.load(Ordering::Relaxed);
-                            if hwnd_val != 0 {
-                                let res = if mode.eq_ignore_ascii_case("background") {
+                            let is_secret = *self.capture_mode.read().unwrap() == "secret_desktop";
+                            let (target_hwnd, sub_u, sub_v) = if is_secret {
+                                let desk_name = self.isolated_desktop.read().unwrap().clone();
+                                let target_pid = self.isolated_pid.load(Ordering::Relaxed);
+                                if let Ok(windows) = DesktopManager::list_windows_in_desktop(&desk_name) {
+                                    let (screen_w, screen_h) = DesktopManager::get_desktop_metrics();
+                                    let pt_x = (u * screen_w as f64).round() as i32;
+                                    let pt_y = (v * screen_h as f64).round() as i32;
+
+                                    let mut sorted = windows;
+                                    if target_pid > 0 {
+                                        sorted.retain(|w| w.pid == target_pid);
+                                    }
+                                    // 面積由小到大排序，優先命中浮動對話框或按鈕
+                                    sorted.sort_by_key(|w| (w.width as i64) * (w.height as i64));
+
+                                    let hit = sorted.iter().find(|w| {
+                                        pt_x >= w.x && pt_x < w.x + w.width && pt_y >= w.y && pt_y < w.y + w.height
+                                    });
+
+                                    if let Some(w) = hit {
+                                        let su = if w.width > 0 { ((pt_x - w.x) as f64 / w.width as f64).clamp(0.0, 1.0) } else { 0.5 };
+                                        let sv = if w.height > 0 { ((pt_y - w.y) as f64 / w.height as f64).clamp(0.0, 1.0) } else { 0.5 };
+                                        (w.hwnd, su, sv)
+                                    } else {
+                                        (self.target_hwnd.load(Ordering::Relaxed), u, v)
+                                    }
+                                } else {
+                                    (self.target_hwnd.load(Ordering::Relaxed), u, v)
+                                }
+                            } else {
+                                (self.target_hwnd.load(Ordering::Relaxed), u, v)
+                            };
+
+                            if target_hwnd != 0 {
+                                let effective_mode = if is_secret { "background" } else { &mode };
+                                let res = if effective_mode.eq_ignore_ascii_case("background") {
                                     self.arbiter.execute_mouse(
-                                        hwnd_val, &source, &subaction, &button, u, v, delta,
+                                        target_hwnd, &source, &subaction, &button, sub_u, sub_v, delta,
                                     )
                                 } else {
                                     self.arbiter.execute_mouse_direct(
-                                        hwnd_val, &source, &subaction, &button, u, v, delta,
+                                        target_hwnd, &source, &subaction, &button, sub_u, sub_v, delta,
                                     )
                                 };
                                 match res {
@@ -422,15 +825,18 @@ impl StreamServer {
                             alt,
                             shift,
                         }) => {
-                            let hwnd_val = self.target_hwnd.load(Ordering::Relaxed);
-                            if hwnd_val != 0 {
-                                let res = if mode.eq_ignore_ascii_case("background") {
+                            let is_secret = *self.capture_mode.read().unwrap() == "secret_desktop";
+                            let target_hwnd = self.resolve_target_hwnd(None);
+
+                            if target_hwnd != 0 {
+                                let effective_mode = if is_secret { "background" } else { &mode };
+                                let res = if effective_mode.eq_ignore_ascii_case("background") {
                                     self.arbiter.execute_key(
-                                        hwnd_val, &source, &subaction, vk, char, ctrl, alt, shift,
+                                        target_hwnd, &source, &subaction, vk, char, ctrl, alt, shift,
                                     )
                                 } else {
                                     self.arbiter.execute_key_direct(
-                                        hwnd_val, &source, &subaction, vk, char, ctrl, alt, shift,
+                                        target_hwnd, &source, &subaction, vk, char, ctrl, alt, shift,
                                     )
                                 };
                                 match res {
@@ -459,6 +865,76 @@ impl StreamServer {
                                     event: "input_rejected".into(),
                                     status: "error".into(),
                                     message: Some("尚未選取目標視窗，請先在上方選單選擇視窗".into()),
+                                    data: None,
+                                };
+                                let _ = ctrl_tx.send(serde_json::to_string(&resp)?).await;
+                            }
+                        }
+                        Ok(ClientCommand::TypeText { text, hwnd }) => {
+                            let target_hwnd = self.resolve_target_hwnd(hwnd);
+
+                            if target_hwnd != 0 {
+                                match self.arbiter.execute_text(target_hwnd, &text) {
+                                    Ok(msg) => {
+                                        self.needs_refresh.store(true, Ordering::Relaxed);
+                                        let resp = ServerEvent {
+                                            event: "text_typed".into(),
+                                            status: "ok".into(),
+                                            message: Some(msg),
+                                            data: None,
+                                        };
+                                        let _ = ctrl_tx.send(serde_json::to_string(&resp)?).await;
+                                    }
+                                    Err(e) => {
+                                        let resp = ServerEvent {
+                                            event: "text_typed".into(),
+                                            status: "error".into(),
+                                            message: Some(e),
+                                            data: None,
+                                        };
+                                        let _ = ctrl_tx.send(serde_json::to_string(&resp)?).await;
+                                    }
+                                }
+                            } else {
+                                let resp = ServerEvent {
+                                    event: "text_typed".into(),
+                                    status: "error".into(),
+                                    message: Some("未找到目標視窗 HWND".into()),
+                                    data: None,
+                                };
+                                let _ = ctrl_tx.send(serde_json::to_string(&resp)?).await;
+                            }
+                        }
+                        Ok(ClientCommand::CloseWindow { hwnd }) => {
+                            let target_hwnd = self.resolve_target_hwnd(hwnd);
+
+                            if target_hwnd != 0 {
+                                match self.arbiter.close_window(target_hwnd) {
+                                    Ok(msg) => {
+                                        self.needs_refresh.store(true, Ordering::Relaxed);
+                                        let resp = ServerEvent {
+                                            event: "window_closed".into(),
+                                            status: "ok".into(),
+                                            message: Some(msg),
+                                            data: None,
+                                        };
+                                        let _ = ctrl_tx.send(serde_json::to_string(&resp)?).await;
+                                    }
+                                    Err(e) => {
+                                        let resp = ServerEvent {
+                                            event: "window_closed".into(),
+                                            status: "error".into(),
+                                            message: Some(e),
+                                            data: None,
+                                        };
+                                        let _ = ctrl_tx.send(serde_json::to_string(&resp)?).await;
+                                    }
+                                }
+                            } else {
+                                let resp = ServerEvent {
+                                    event: "window_closed".into(),
+                                    status: "error".into(),
+                                    message: Some("未找到目標視窗 HWND".into()),
                                     data: None,
                                 };
                                 let _ = ctrl_tx.send(serde_json::to_string(&resp)?).await;

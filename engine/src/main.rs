@@ -1,7 +1,10 @@
 mod capture;
+mod composite_capture;
+mod desktop;
 mod input;
 mod monitor;
 mod server;
+mod uia;
 
 use server::StreamServer;
 use std::env;

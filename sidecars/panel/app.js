@@ -59,6 +59,7 @@ function connectWebSocket() {
 
   ws.onopen = () => {
     log('WebSocket', '成功連線至 Rust 引擎！正在查詢拓撲與視窗清單...', 'sys');
+    ws.send(JSON.stringify({ action: 'set_capture_mode', mode: 'direct' }));
     ws.send(JSON.stringify({ action: 'get_windows' }));
     ws.send(JSON.stringify({ action: 'get_monitors' }));
   };
@@ -75,6 +76,10 @@ function connectWebSocket() {
           if (msg.status === 'ok') {
             log('虛擬派駐', msg.message || '視窗已派駐至虛擬螢幕', 'sys');
             setVirtualBadgeActive(true, msg.data);
+            if (modeSelect) {
+              modeSelect.value = 'direct';
+              localStorage.setItem('desktop_cockpit_input_mode', 'direct');
+            }
           } else {
             log('派駐失敗', msg.message || '無法派駐視窗', 'agent');
           }
@@ -84,6 +89,29 @@ function connectWebSocket() {
             setVirtualBadgeActive(false);
           } else {
             log('回歸失敗', msg.message || '無法移回主螢幕', 'agent');
+          }
+        } else if (msg.event === 'app_launched') {
+          log('隔離桌面', msg.message, 'sys');
+          if (modeSelect) modeSelect.value = 'secret_desktop';
+          ws.send(JSON.stringify({ action: 'get_isolated_windows' }));
+        } else if (msg.event === 'isolated_windows' && Array.isArray(msg.data)) {
+          log('隔離視窗', `發現 ${msg.data.length} 個隔離視窗: ` + msg.data.map(w => w.title || w.class_name).join(', '), 'sys');
+          populateWindows(msg.data);
+        } else if (msg.event === 'uia_tree') {
+          if (msg.status === 'ok') {
+            const chCount = msg.data.children ? msg.data.children.length : 0;
+            log('UIA 樹', `根節點 [${msg.data.control_type}] "${msg.data.name}", 子控制項數: ${chCount}`, 'sys');
+            console.log('[UIA Tree]', msg.data);
+          } else {
+            log('UIA 失敗', msg.message || '無法取得語意樹', 'agent');
+          }
+        } else if (msg.event === 'uia_invoked') {
+          log('UIA 互動', msg.message, 'sys');
+        } else if (msg.event === 'visual_diff') {
+          if (msg.data) {
+            const addedWins = msg.data.added_windows ? msg.data.added_windows.length : 0;
+            const newDlgs = msg.data.new_dialogs ? msg.data.new_dialogs.length : 0;
+            log('快照比對', `新增視窗: ${addedWins}, 新增對話框: ${newDlgs}`, newDlgs > 0 ? 'agent' : 'sys');
           }
         } else if (msg.event === 'input_ack') {
           log('底層確認', msg.message || '輸入事件已成功投遞', 'sys');
@@ -156,6 +184,7 @@ function populateWindows(windows) {
     windowSelect.value = autoSelectHwnd;
     localStorage.setItem('desktop_cockpit_selected_hwnd', autoSelectHwnd);
     if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ action: 'set_capture_mode', mode: getMode() }));
       ws.send(JSON.stringify({ action: 'set_window', hwnd: autoSelectHwnd }));
       log('視窗切換', `自動連結目標視窗 -> 0x${autoSelectHwnd.toString(16).toUpperCase()}`, 'sys');
     }
@@ -221,6 +250,7 @@ windowSelect.addEventListener('change', () => {
   const hwnd = parseInt(windowSelect.value, 10);
   if (hwnd && ws && ws.readyState === WebSocket.OPEN) {
     localStorage.setItem('desktop_cockpit_selected_hwnd', hwnd);
+    ws.send(JSON.stringify({ action: 'set_capture_mode', mode: getMode() }));
     ws.send(JSON.stringify({ action: 'set_window', hwnd }));
     log('視窗切換', `切換目標視窗 HWND -> 0x${hwnd.toString(16).toUpperCase()}`, 'sys');
   }
@@ -239,15 +269,23 @@ if (fpsSelect) {
 
 // Mode controls & persistence
 const savedMode = localStorage.getItem('desktop_cockpit_input_mode');
-if (savedMode && modeSelect) {
-  modeSelect.value = savedMode;
+if (modeSelect) {
+  if (savedMode === 'secret_desktop' || !savedMode) {
+    modeSelect.value = 'direct';
+    localStorage.setItem('desktop_cockpit_input_mode', 'direct');
+  } else {
+    modeSelect.value = savedMode;
+  }
 }
 
 if (modeSelect) {
   modeSelect.addEventListener('change', () => {
     localStorage.setItem('desktop_cockpit_input_mode', modeSelect.value);
-    const modeName = modeSelect.value === 'direct' ? '⚡ 直通模式 (RustDesk SendInput)' : '🌿 背景模式 (Win32 PostMessage)';
+    const modeName = modeSelect.value === 'direct' ? '⚡ 直通模式 (DXGI / SendInput)' : '🌿 背景模式 (Win32 PostMessage)';
     log('模式切換', `切換為 ${modeName}`, 'sys');
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ action: 'set_capture_mode', mode: modeSelect.value }));
+    }
   });
 }
 
@@ -463,6 +501,29 @@ viewport.addEventListener('blur', () => {
   focusBadge.textContent = '🔘 點擊畫布捕捉鍵盤輸入 (按 Esc 釋放焦點回到聊天室)';
   focusBadge.style.color = 'var(--text-muted)';
 });
+
+// ADC 2.0 UIA Semantic Sensing & Visual Memory
+const btnScanUIA = document.getElementById('btnScanUIA');
+const btnDiff = document.getElementById('btnDiff');
+
+if (btnScanUIA) {
+  btnScanUIA.addEventListener('click', () => {
+    const hwnd = parseInt(windowSelect.value, 10) || null;
+    log('UIA 感知', `正在請求掃描目標視窗語意樹 (HWND: ${hwnd ? '0x' + hwnd.toString(16).toUpperCase() : '當前焦點'})...`, 'sys');
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ action: 'get_uia_tree', hwnd, depth: 4 }));
+    }
+  });
+}
+
+if (btnDiff) {
+  btnDiff.addEventListener('click', () => {
+    log('Visual Memory', '正在比對快照差異 (偵測新彈窗與狀態差異)...', 'sys');
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ action: 'get_visual_diff' }));
+    }
+  });
+}
 
 // Initialize connection
 connectWebSocket();

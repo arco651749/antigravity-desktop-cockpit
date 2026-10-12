@@ -2,6 +2,7 @@ use std::mem::size_of;
 use std::sync::atomic::{AtomicIsize, AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use windows::Win32::Foundation::{BOOL, HWND, LPARAM, POINT, RECT, WPARAM};
+use windows::Win32::System::StationsAndDesktops::{GetThreadDesktop, SetThreadDesktop};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT,
     KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_LEFTDOWN,
@@ -10,11 +11,25 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     MOUSEINPUT, VIRTUAL_KEY,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetSystemMetrics, GetWindowRect, PostMessageW, SetForegroundWindow,
+    GetSystemMetrics, GetWindowRect, GetWindowThreadProcessId, PostMessageW, SetForegroundWindow,
     SM_CXSCREEN, SM_CYSCREEN, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
 };
 
+pub fn ensure_desktop_for_hwnd(hwnd: HWND) {
+    unsafe {
+        let tid = GetWindowThreadProcessId(hwnd, None);
+        if tid != 0 {
+            if let Ok(hdesk) = GetThreadDesktop(tid) {
+                let _ = SetThreadDesktop(hdesk);
+                return;
+            }
+        }
+        crate::capture::ensure_default_desktop();
+    }
+}
+
 pub const WM_SETFOCUS: u32 = 0x0007;
+pub const WM_CLOSE: u32 = 0x0010;
 pub const WM_MOUSEMOVE: u32 = 0x0200;
 pub const WM_LBUTTONDOWN: u32 = 0x0201;
 pub const WM_LBUTTONUP: u32 = 0x0202;
@@ -108,6 +123,12 @@ impl InputArbiter {
         BOOL(1)
     }
 
+    unsafe extern "system" fn collect_children_cb(child: HWND, lparam: LPARAM) -> BOOL {
+        let list = &mut *(lparam.0 as *mut Vec<HWND>);
+        list.push(child);
+        BOOL(1)
+    }
+
     pub fn execute_mouse(
         &self,
         hwnd_val: isize,
@@ -118,7 +139,8 @@ impl InputArbiter {
         v: f64,
         delta: i32,
     ) -> Result<String, String> {
-        crate::capture::ensure_default_desktop();
+        let hwnd = HWND(hwnd_val as *mut _);
+        ensure_desktop_for_hwnd(hwnd);
         let is_user = source.eq_ignore_ascii_case("user");
         if is_user {
             self.record_user_activity();
@@ -210,7 +232,8 @@ impl InputArbiter {
         alt: bool,
         shift: bool,
     ) -> Result<String, String> {
-        crate::capture::ensure_default_desktop();
+        let hwnd = HWND(hwnd_val as *mut _);
+        ensure_desktop_for_hwnd(hwnd);
         let is_user = source.eq_ignore_ascii_case("user");
         if is_user {
             self.record_user_activity();
@@ -219,13 +242,19 @@ impl InputArbiter {
         }
 
         unsafe {
+            use windows::Win32::UI::WindowsAndMessaging::{GetAncestor, IsWindow, GA_ROOT};
             let last_child = self.last_clicked_child.load(Ordering::Relaxed);
-            let target = if last_child != 0 {
-                HWND(last_child as *mut _)
-            } else {
-                HWND(hwnd_val as *mut _)
-            };
             let root = HWND(hwnd_val as *mut _);
+            let target = if last_child != 0 {
+                let ch = HWND(last_child as *mut _);
+                if IsWindow(ch).as_bool() && GetAncestor(ch, GA_ROOT) == root {
+                    ch
+                } else {
+                    root
+                }
+            } else {
+                root
+            };
 
             let is_up = action.eq_ignore_ascii_case("up");
 
@@ -283,23 +312,13 @@ impl InputArbiter {
             // 3. 一般文字輸入或功能鍵 (Enter, Backspace, Tab, 方向鍵, 純字母)
             if let Some(ch) = unicode_char {
                 if !is_up {
-                    let _ = PostMessageW(target, WM_KEYDOWN, WPARAM(vk_code as usize), LPARAM(0));
-                    let _ = PostMessageW(target, WM_CHAR, WPARAM(ch as usize), LPARAM(0));
-                } else {
-                    let _ = PostMessageW(target, WM_KEYUP, WPARAM(vk_code as usize), LPARAM(0));
+                    // 純文字輸入只發送單一 WM_CHAR，防止與視窗訊息迴圈 TranslateMessage 重複疊加產生多重字元
+                    let _ = PostMessageW(target, WM_CHAR, WPARAM(ch as usize), LPARAM(1));
                 }
+                // is_up 釋放時無需對純文字再次發送多餘訊息
             } else {
                 let msg = if is_up { WM_KEYUP } else { WM_KEYDOWN };
                 let _ = PostMessageW(target, msg, WPARAM(vk_code as usize), LPARAM(0));
-
-                if !is_up {
-                    match vk_code {
-                        13 => { let _ = PostMessageW(target, WM_CHAR, WPARAM(13), LPARAM(0)); } // Enter
-                        8  => { let _ = PostMessageW(target, WM_CHAR, WPARAM(8), LPARAM(0)); }  // Backspace
-                        9  => { let _ = PostMessageW(target, WM_CHAR, WPARAM(9), LPARAM(0)); }  // Tab
-                        _ => {}
-                    }
-                }
             }
 
             Ok(format!(
@@ -525,7 +544,8 @@ impl InputArbiter {
                         },
                     });
                 }
-                if shift && vk_code != 16 {
+                // 注意：若已有直接的 unicode_char (如 'A', '!'), 無需額外壓住 Shift，避免 Windows 產生二次修飾
+                if shift && vk_code != 16 && unicode_char.is_none() {
                     inputs.push(INPUT {
                         r#type: INPUT_KEYBOARD,
                         Anonymous: INPUT_0 {
@@ -599,7 +619,7 @@ impl InputArbiter {
                         },
                     });
                 }
-                if shift && vk_code != 16 {
+                if shift && vk_code != 16 && unicode_char.is_none() {
                     inputs.push(INPUT {
                         r#type: INPUT_KEYBOARD,
                         Anonymous: INPUT_0 {
@@ -623,6 +643,57 @@ impl InputArbiter {
                 "直通模式按鍵投遞成功: HWND=0x{:X}, act={}, vk={}",
                 hwnd.0 as usize, action, vk_code
             ))
+        }
+    }
+
+    /// 向目標視窗或其編輯子控制項逐字注入文字 (純背景 WM_CHAR，支援多語系，零焦點干擾)
+    pub fn execute_text(&self, hwnd_val: isize, text: &str) -> Result<String, String> {
+        let hwnd = HWND(hwnd_val as *mut _);
+        ensure_desktop_for_hwnd(hwnd);
+        unsafe {
+            use windows::Win32::UI::WindowsAndMessaging::{GetAncestor, IsWindow, GA_ROOT};
+            let last_child = self.last_clicked_child.load(Ordering::Relaxed);
+            let valid_child = if last_child != 0 {
+                let ch = HWND(last_child as *mut _);
+                if IsWindow(ch).as_bool() && GetAncestor(ch, GA_ROOT) == hwnd {
+                    Some(ch)
+                } else {
+                    None
+                }
+            } else {
+                None
+            };
+
+            let target = if let Some(ch) = valid_child {
+                ch
+            } else {
+                let mut children: Vec<HWND> = Vec::new();
+                let ptr = &mut children as *mut _ as isize;
+                let _ = EnumChildWindows(hwnd, Some(Self::collect_children_cb), LPARAM(ptr));
+                let edit_child = children.iter().find(|&&ch| {
+                    let mut cbuf = [0u16; 128];
+                    let len = windows::Win32::UI::WindowsAndMessaging::GetClassNameW(ch, &mut cbuf);
+                    let cls = String::from_utf16_lossy(&cbuf[..len.max(0) as usize]);
+                    cls.starts_with("Scintilla") || cls.eq_ignore_ascii_case("Edit")
+                });
+                edit_child.copied().unwrap_or(hwnd)
+            };
+
+            let _ = PostMessageW(target, WM_SETFOCUS, WPARAM(0), LPARAM(0));
+            for ch in text.chars() {
+                let _ = PostMessageW(target, WM_CHAR, WPARAM(ch as usize), LPARAM(1));
+            }
+            Ok(format!("成功向 0x{:X} 注入文字 (共 {} 字元)", target.0 as usize, text.chars().count()))
+        }
+    }
+
+    /// 向目標視窗發送關閉訊息 (純背景 WM_CLOSE)
+    pub fn close_window(&self, hwnd_val: isize) -> Result<String, String> {
+        let hwnd = HWND(hwnd_val as *mut _);
+        ensure_desktop_for_hwnd(hwnd);
+        unsafe {
+            let _ = PostMessageW(hwnd, WM_CLOSE, WPARAM(0), LPARAM(0));
+            Ok(format!("成功向 0x{:X} 發送 WM_CLOSE 關閉訊息", hwnd.0 as usize))
         }
     }
 }

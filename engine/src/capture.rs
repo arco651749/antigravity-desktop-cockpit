@@ -122,23 +122,46 @@ impl DxgiCapturer {
             let mut out_height = 1080u32;
             let mut found_name = String::new();
 
+            let mut fallback_output: Option<IDXGIOutput> = None;
+            let mut fallback_w = 1920u32;
+            let mut fallback_h = 1080u32;
+            let mut fallback_name = String::new();
+
             let mut output_idx = 0;
             while let Ok(output) = adapter.EnumOutputs(output_idx) {
                 let out_desc = output.GetDesc().unwrap_or_default();
                 let dev_name = String::from_utf16_lossy(&out_desc.DeviceName);
                 let dev_clean = dev_name.trim_matches('\0');
+                let w = (out_desc.DesktopCoordinates.right - out_desc.DesktopCoordinates.left).max(100) as u32;
+                let h = (out_desc.DesktopCoordinates.bottom - out_desc.DesktopCoordinates.top).max(100) as u32;
 
-                if dev_clean == target_display || (target_display.is_empty() && output_idx > 0) {
+                if !target_display.is_empty() && dev_clean == target_display {
                     target_output = Some(output);
                     found_name = dev_clean.to_string();
-                    out_width = (out_desc.DesktopCoordinates.right - out_desc.DesktopCoordinates.left).max(100) as u32;
-                    out_height = (out_desc.DesktopCoordinates.bottom - out_desc.DesktopCoordinates.top).max(100) as u32;
+                    out_width = w;
+                    out_height = h;
                     break;
+                }
+
+                if dev_clean != r"\\.\DISPLAY1" || out_desc.DesktopCoordinates.left > 0 {
+                    fallback_output = Some(output);
+                    fallback_name = dev_clean.to_string();
+                    fallback_w = w;
+                    fallback_h = h;
                 }
                 output_idx += 1;
             }
 
-            let output = target_output.ok_or_else(|| format!("未找到顯示器 {}", target_display))?;
+            let output = if let Some(o) = target_output {
+                o
+            } else if let Some(fo) = fallback_output {
+                found_name = fallback_name;
+                out_width = fallback_w;
+                out_height = fallback_h;
+                fo
+            } else {
+                return Err(format!("未找到可用 DXGI 顯示器 (請求: {})", target_display));
+            };
 
             let mut device: Option<ID3D11Device> = None;
             let mut context: Option<ID3D11DeviceContext> = None;
@@ -482,9 +505,9 @@ impl WindowCapturer {
         let is_on_virtual = Self::is_window_on_virtual_display(hwnd_val);
 
         if is_on_virtual {
-            match DxgiCapturer::new_for_display(r"\\.\DISPLAY7") {
+            match DxgiCapturer::new_for_display("") {
                 Ok(c) => {
-                    println!("[WindowCapturer] 目標位於虛擬螢幕，啟用 DXGI 硬體零 CPU 擷取！");
+                    println!("[WindowCapturer] 目標位於虛擬螢幕 ({})，啟用 DXGI 硬體零 CPU 擷取！", c.display_name);
                     if !c.last_jpeg.is_empty() {
                         last_jpeg = c.last_jpeg.clone();
                     }
@@ -511,8 +534,8 @@ impl WindowCapturer {
             let hwnd = HWND(hwnd_val as *mut _);
             let mut rect = RECT::default();
             if GetWindowRect(hwnd, &mut rect).is_ok() {
-                // \\.\DISPLAY7 的 X 座標為 3200
-                rect.left >= 3000
+                // 實體主螢幕位於 (0, 0)，虛擬第二螢幕位於 X=3200
+                rect.left >= 2000
             } else {
                 false
             }
@@ -529,8 +552,8 @@ impl WindowCapturer {
     pub fn capture_jpeg(&mut self, quality: u8) -> Result<Option<Arc<Vec<u8>>>, String> {
         // 如果目前尚未開啟 DXGI，但視窗已被移至虛擬螢幕，動態晉升為 DXGI！
         if self.dxgi.is_none() && Self::is_window_on_virtual_display(self.hwnd) {
-            if let Ok(c) = DxgiCapturer::new_for_display(r"\\.\DISPLAY7") {
-                println!("[WindowCapturer] 偵測到視窗進入虛擬螢幕，動態晉升為 DXGI 硬體擷取");
+            if let Ok(c) = DxgiCapturer::new_for_display("") {
+                println!("[WindowCapturer] 偵測到視窗進入虛擬螢幕 ({})，動態晉升為 DXGI 硬體擷取", c.display_name);
                 self.dxgi = Some(c);
             }
         }

@@ -4,3 +4,10 @@ node_modules/
 Thumbs.db
 *.log
 @AutomationLog.txt
+rustdesk-master/
+scratch/
+engine/*.jpg
+engine/*.png
+*.tmp
+
+RPA/

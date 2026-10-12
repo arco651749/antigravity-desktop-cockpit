@@ -28,11 +28,17 @@
         <button id="btnRestorePrimary" class="btn-secondary" title="將視窗移回主實體螢幕">⬅️ 移回主螢幕</button>
       </div>
 
+      <div class="tool-group" style="background: rgba(37, 99, 235, 0.15); border: 1px solid rgba(59, 130, 246, 0.4); border-radius: 6px; padding: 4px 8px;">
+        <span style="font-weight: 700; color: #60a5fa;">🧠 語意感知:</span>
+        <button id="btnScanUIA" class="btn-primary" title="掃描當前目標視窗之 UIA 語意樹與控制項">🌳 UIA 樹</button>
+        <button id="btnDiff" class="btn-secondary" title="比對 Visual Memory 快照 (偵測新彈窗與狀態差異)">📊 差異偵測</button>
+      </div>
+
       <div class="tool-group">
         <span style="color: #60a5fa; font-weight: 600; font-size: 11px;">模式:</span>
-        <select id="modeSelect" title="切換直通模式 (RustDesk SendInput) 或背景模式 (Win32 PostMessage)">
-          <option value="direct" selected>⚡ 直通模式 (RustDesk 原理)</option>
-          <option value="background">🌿 背景模式 (靜默無干擾)</option>
+        <select id="modeSelect" title="切換直通模式或背景模式">
+          <option value="direct" selected>⚡ 直通模式 (DXGI / SendInput)</option>
+          <option value="background">🌿 背景模式 (PrintWindow)</option>
         </select>
       </div>
 
@@ -41,6 +47,7 @@
         <select id="fpsSelect">
           <option value="60">⚡ 60 FPS</option>
           <option value="30" selected>🌿 30 FPS</option>
+          <option value="15">🍃 15 FPS</option>
           <option value="5">💤 5 FPS</option>
         </select>
         <button id="btnEngineRestart" title="重啟底層串流引擎">⚡ 重啟</button>

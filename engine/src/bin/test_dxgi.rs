@@ -22,9 +22,9 @@ fn main() -> Result<()> {
             let out_desc = output.GetDesc().unwrap_or_default();
             let dev_name = String::from_utf16_lossy(&out_desc.DeviceName);
             let dev_clean = dev_name.trim_matches('\0');
-            if dev_clean == r"\\.\DISPLAY7" {
+            println!("Found DXGI Output {}: '{}', Coords: {:?}", output_idx, dev_clean, out_desc.DesktopCoordinates);
+            if dev_clean.starts_with(r"\\.\DISPLAY") && dev_clean != r"\\.\DISPLAY1" {
                 target_output = Some(output);
-                break;
             }
             output_idx += 1;
         }
@@ -32,7 +32,7 @@ fn main() -> Result<()> {
         let output = match target_output {
             Some(o) => o,
             None => {
-                println!("DISPLAY7 not found!");
+                println!("Non-primary DXGI display not found!");
                 return Ok(());
             }
         };
