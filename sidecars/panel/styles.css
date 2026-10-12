@@ -169,33 +169,17 @@ select:hover, button:hover {
   display: block;
 }
 
-/* HUD Overlay */
+/* HUD Stat in banner */
 .hud-stat {
-  position: absolute;
-  top: 10px;
-  right: 10px;
-  background: rgba(18, 19, 26, 0.85);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  backdrop-filter: blur(4px);
-  padding: 4px 8px;
-  border-radius: 5px;
   font-size: 11px;
-  font-family: monospace;
+  font-family: "Cascadia Code", Consolas, monospace;
   color: #38bdf8;
-  pointer-events: none;
-}
-
-.focus-badge {
-  position: absolute;
-  bottom: 10px;
-  left: 10px;
-  background: rgba(18, 19, 26, 0.85);
-  border: 1px solid rgba(255, 255, 255, 0.1);
-  padding: 4px 8px;
+  background: rgba(15, 23, 42, 0.7);
+  border: 1px solid rgba(56, 189, 248, 0.25);
+  padding: 2px 8px;
   border-radius: 4px;
-  font-size: 11px;
-  color: var(--text-muted);
-  pointer-events: none;
+  letter-spacing: 0.3px;
+  user-select: none;
 }
 
 /* Bottom logs */

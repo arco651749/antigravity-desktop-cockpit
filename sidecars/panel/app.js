@@ -15,7 +15,6 @@ const virtualMonText = document.getElementById('virtualMonText');
 const arbiterStatus = document.getElementById('arbiterStatus');
 const arbiterText = document.getElementById('arbiterText');
 const hudStat = document.getElementById('hudStat');
-const focusBadge = document.getElementById('focusBadge');
 const consoleLogs = document.getElementById('consoleLogs');
 
 let ws = null;
@@ -23,6 +22,14 @@ let currentFPS = 30;
 let frameCount = 0;
 let lastFpsTime = performance.now();
 let displayedFps = 30;
+let currentCoords = '(0.000, 0.000)';
+
+function updateHudStat(coords) {
+  if (coords) currentCoords = coords;
+  if (hudStat) {
+    hudStat.textContent = `FPS: ${displayedFps} | 模式: ${getMode().toUpperCase()} | 座標: ${currentCoords}`;
+  }
+}
 let isDragging = false;
 let dragButton = 'left';
 let humanTimeout = null;
@@ -147,6 +154,7 @@ function connectWebSocket() {
           displayedFps = frameCount;
           frameCount = 0;
           lastFpsTime = now;
+          updateHudStat();
         }
       } catch (err) {
         // Drop malformed frame
@@ -317,6 +325,7 @@ if (modeSelect) {
     localStorage.setItem('desktop_cockpit_input_mode', modeSelect.value);
     const modeName = modeSelect.value === 'direct' ? '⚡ 直通模式 (DXGI / SendInput)' : '🌿 背景模式 (Win32 PostMessage)';
     log('模式切換', `切換為 ${modeName}`, 'sys');
+    updateHudStat();
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ action: 'set_capture_mode', mode: modeSelect.value }));
     }
@@ -426,7 +435,7 @@ viewport.addEventListener('mouseleave', () => {
 
 viewport.addEventListener('mousemove', (e) => {
   const { u, v } = getNormalizedCoords(e);
-  hudStat.textContent = `FPS: ${displayedFps} | 模式: ${getMode().toUpperCase()} | 座標: (${u}, ${v})`;
+  updateHudStat(`(${u}, ${v})`);
 
   if (isDragging) {
     const now = performance.now();
@@ -527,14 +536,7 @@ viewport.addEventListener('keyup', (e) => {
   }
 });
 
-viewport.addEventListener('focus', () => {
-  focusBadge.textContent = '🟢 畫布已鎖定鍵盤焦點 (快捷鍵穿透中，按 Esc 釋放)';
-  focusBadge.style.color = '#4ade80';
-});
-viewport.addEventListener('blur', () => {
-  focusBadge.textContent = '🔘 點擊畫布捕捉鍵盤輸入 (按 Esc 釋放焦點回到聊天室)';
-  focusBadge.style.color = 'var(--text-muted)';
-});
+
 
 // ADC 2.0 UIA Semantic Sensing & Visual Memory
 const btnScanUIA = document.getElementById('btnScanUIA');

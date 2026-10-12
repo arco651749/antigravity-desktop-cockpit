@@ -64,20 +64,14 @@
           <span id="arbiterText">待機 (隨時接受人類或 AI 操作)</span>
         </div>
       </div>
-      <div style="color: var(--text-muted);">
-        提示: 畫布內直接支援左/中/右鍵拖曳 (Blender 旋轉)、滾輪與按鍵穿透
+      <div class="hud-stat" id="hudStat">
+        FPS: 30 | 模式: DIRECT | 座標: (0.000, 0.000)
       </div>
     </div>
 
     <!-- Streaming Canvas Viewport -->
     <div class="viewport-wrapper" id="viewport" tabindex="0">
       <canvas id="streamCanvas"></canvas>
-      <div class="hud-stat" id="hudStat">
-        FPS: -- | 延遲: -- ms | 座標: (0.000, 0.000)
-      </div>
-      <div class="focus-badge" id="focusBadge">
-        🔘 點擊畫布捕捉鍵盤輸入 (按 Esc 釋放焦點回到聊天室)
-      </div>
     </div>
 
     <!-- Live Event Console -->
