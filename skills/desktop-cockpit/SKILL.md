@@ -19,13 +19,31 @@ AI Agent 可直接透過本機 WebSocket 連線至串流引擎發送 JSON 指令
 | 指令 (`action`) | 說明 | 參數範例 |
 | :--- | :--- | :--- |
 | `get_windows` | 取得系統所有在線視窗與 HWND | `{ "action": "get_windows" }` |
-| `dispatch_to_virtual` | 將視窗派駐至虛擬第二螢幕 | `{ "action": "dispatch_to_virtual", "hwnd": 132924 }` |
-| `restore_to_primary` | 將視窗移回主螢幕 | `{ "action": "restore_to_primary", "hwnd": 132924 }` |
+| `get_monitors` | 取得 Windows 顯示器拓撲 | `{ "action": "get_monitors" }` |
+| `plug_in_virtual_display` | 程式化掛載虛擬第二螢幕 (0 批次檔、0 UAC) | `{ "action": "plug_in_virtual_display" }` |
+| `plug_out_virtual_display` | 程式化卸載虛擬第二螢幕 (恢復單螢幕) | `{ "action": "plug_out_virtual_display" }` |
+| `dispatch_to_virtual` | 派駐視窗至虛擬螢幕 (未在線時自動掛載自癒) | `{ "action": "dispatch_to_virtual", "hwnd": 132924 }` |
+| `restore_to_primary` | 將視窗移回主實體螢幕 | `{ "action": "restore_to_primary", "hwnd": 132924 }` |
 | `mouse` | 投遞滑鼠操作 (點擊/移動/滾輪) | `{ "action": "mouse", "source": "agent", "mode": "direct", "subaction": "down", "button": "left", "u": 0.5, "v": 0.5 }` |
 | `key` | 快捷鍵直通 (Ctrl+C, Ctrl+V 等) | `{ "action": "key", "source": "agent", "mode": "direct", "subaction": "down", "vk": 83, "ctrl": true }` |
 | `type_text` | 逐字注入多語系文字或代碼 | `{ "action": "type_text", "text": "Hello World", "hwnd": 132924 }` |
 | `get_uia_tree` | 提取視窗 UIA 語意控制項樹 | `{ "action": "get_uia_tree", "hwnd": 132924, "depth": 4 }` |
 | `get_visual_diff` | Visual Memory 比對快照差異 | `{ "action": "get_visual_diff" }` |
+
+### CLI 命令列快捷操作 (`cockpit_cli.py`)
+
+AI Agent 或終端使用者可直接調用 Python CLI 執行全流程控制：
+- **虛擬螢幕硬體控制 (零 UAC 彈窗)**：
+  - `python.exe -X utf8 cockpit_cli.py display on`：掛載虛擬第二螢幕。
+  - `python.exe -X utf8 cockpit_cli.py display off`：拔除虛擬螢幕，恢復為單螢幕。
+  - `python.exe -X utf8 cockpit_cli.py display status`：檢視所有顯示器拓撲與在線狀態。
+- **視窗派駐 (具備自動自癒掛載機制)**：
+  - `python.exe -X utf8 cockpit_cli.py dispatch <hwnd>`：即使虛擬螢幕當前未開啟，指令會自動透過底層 IOCTL 掛載虛擬螢幕並精確派駐。
+  - `python.exe -X utf8 cockpit_cli.py restore <hwnd>`：將視窗移回主螢幕。
+- **畫面截取與即時輸入**：
+  - `python.exe -X utf8 cockpit_cli.py capture -o screen.jpg`：截取 60 FPS DXGI 畫面。
+  - `python.exe -X utf8 cockpit_cli.py type "文字內容"`：注入多語系文字。
+  - `python.exe -X utf8 cockpit_cli.py hotkey "ctrl+l"`：發送快捷鍵。
 
 完整參數規範請參閱：[`API_REFERENCE.md`](../../API_REFERENCE.md)
 

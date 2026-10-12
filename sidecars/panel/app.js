@@ -9,6 +9,7 @@ const btnRefresh = document.getElementById('btnRefresh');
 const btnEngineRestart = document.getElementById('btnEngineRestart');
 const btnDispatchVirtual = document.getElementById('btnDispatchVirtual');
 const btnRestorePrimary = document.getElementById('btnRestorePrimary');
+const btnToggleDisplay = document.getElementById('btnToggleDisplay');
 const virtualMonStatus = document.getElementById('virtualMonStatus');
 const virtualMonText = document.getElementById('virtualMonText');
 const arbiterStatus = document.getElementById('arbiterStatus');
@@ -115,6 +116,13 @@ function connectWebSocket() {
           }
         } else if (msg.event === 'input_ack') {
           log('底層確認', msg.message || '輸入事件已成功投遞', 'sys');
+        } else if (msg.event === 'virtual_display_plugged' || msg.event === 'virtual_display_unplugged') {
+          log('顯示控制', msg.message || '虛擬顯示器狀態已變更', 'sys');
+          if (msg.data && Array.isArray(msg.data)) {
+            updateMonitorStatus(msg.data);
+          } else if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ action: 'get_monitors' }));
+          }
         } else if (msg.event === 'input_rejected') {
           log('輸入拒絕', msg.message || '輸入被阻擋', 'agent');
         }
@@ -241,6 +249,22 @@ if (btnRestorePrimary) {
     if (ws && ws.readyState === WebSocket.OPEN) {
       log('調度', `正在將視窗 0x${hwnd.toString(16).toUpperCase()} 移回主實體螢幕...`, 'sys');
       ws.send(JSON.stringify({ action: 'restore_to_primary', hwnd }));
+    }
+  });
+}
+
+if (btnToggleDisplay) {
+  btnToggleDisplay.addEventListener('click', () => {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      log('警告', '引擎未連線，無法發送控制指令', 'agent');
+      return;
+    }
+    if (detectedVirtualMon) {
+      log('顯示控制', '正在透過 Win32 DeviceIoControl 卸載虛擬螢幕 (恢復單螢幕)...', 'sys');
+      ws.send(JSON.stringify({ action: 'plug_out_virtual_display' }));
+    } else {
+      log('顯示控制', '正在透過 Win32 DeviceIoControl 掛載虛擬螢幕 (0 批次檔、0 UAC)...', 'sys');
+      ws.send(JSON.stringify({ action: 'plug_in_virtual_display' }));
     }
   });
 }

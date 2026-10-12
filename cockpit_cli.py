@@ -9,6 +9,199 @@ sys.stdout.reconfigure(encoding="utf-8")
 
 WS_URL = "ws://127.0.0.1:48280"
 
+import time
+import ctypes
+from ctypes import wintypes
+
+class GUID(ctypes.Structure):
+    _fields_ = [
+        ("Data1", wintypes.DWORD),
+        ("Data2", wintypes.WORD),
+        ("Data3", wintypes.WORD),
+        ("Data4", ctypes.c_byte * 8)
+    ]
+
+GUID_DEVINTERFACE_USBMMIDD = GUID(
+    0xb5ffd75f,
+    0xda40,
+    0x4353,
+    (ctypes.c_byte * 8)(0x8f, 0xf8, 0xb6, 0xda, 0xf6, 0xf1, 0xd8, 0xca)
+)
+
+DIGCF_PRESENT = 0x00000002
+DIGCF_DEVICEINTERFACE = 0x00000010
+IOCTL_PLUG_MONITOR = 2307084  # 0x23340C
+
+class SP_DEVICE_INTERFACE_DATA(ctypes.Structure):
+    _fields_ = [
+        ("cbSize", wintypes.DWORD),
+        ("InterfaceClassGuid", GUID),
+        ("Flags", wintypes.DWORD),
+        ("Reserved", ctypes.POINTER(ctypes.c_ulong))
+    ]
+
+class RECT(ctypes.Structure):
+    _fields_ = [
+        ('left', ctypes.c_long),
+        ('top', ctypes.c_long),
+        ('right', ctypes.c_long),
+        ('bottom', ctypes.c_long)
+    ]
+
+class MONITORINFOEXW(ctypes.Structure):
+    _fields_ = [
+        ('cbSize', wintypes.DWORD),
+        ('rcMonitor', RECT),
+        ('rcWork', RECT),
+        ('dwFlags', wintypes.DWORD),
+        ('szDevice', wintypes.WCHAR * 32)
+    ]
+
+def list_system_monitors():
+    user32 = ctypes.windll.user32
+    monitors = []
+    def cb(hmon, hdc, lprc, lparam):
+        mi = MONITORINFOEXW()
+        mi.cbSize = ctypes.sizeof(MONITORINFOEXW)
+        user32.GetMonitorInfoW(hmon, ctypes.byref(mi))
+        is_primary = bool(mi.dwFlags & 1)
+        w = mi.rcMonitor.right - mi.rcMonitor.left
+        h = mi.rcMonitor.bottom - mi.rcMonitor.top
+        monitors.append({
+            "name": mi.szDevice,
+            "primary": is_primary,
+            "x": mi.rcMonitor.left,
+            "y": mi.rcMonitor.top,
+            "width": w,
+            "height": h,
+            "is_virtual_candidate": not is_primary
+        })
+        return 1
+    CMP = ctypes.WINFUNCTYPE(ctypes.c_int, wintypes.HMONITOR, wintypes.HDC, ctypes.POINTER(RECT), wintypes.LPARAM)
+    user32.EnumDisplayMonitors(0, 0, CMP(cb), 0)
+    return monitors
+
+def get_virtual_device_path():
+    setupapi = ctypes.windll.setupapi
+    setupapi.SetupDiGetClassDevsW.restype = wintypes.HANDLE
+    setupapi.SetupDiGetClassDevsW.argtypes = [
+        ctypes.POINTER(GUID), wintypes.LPCWSTR, wintypes.HWND, wintypes.DWORD
+    ]
+    setupapi.SetupDiEnumDeviceInterfaces.restype = wintypes.BOOL
+    setupapi.SetupDiEnumDeviceInterfaces.argtypes = [
+        wintypes.HANDLE, ctypes.c_void_p, ctypes.POINTER(GUID), wintypes.DWORD,
+        ctypes.POINTER(SP_DEVICE_INTERFACE_DATA)
+    ]
+    setupapi.SetupDiGetDeviceInterfaceDetailW.restype = wintypes.BOOL
+    setupapi.SetupDiGetDeviceInterfaceDetailW.argtypes = [
+        wintypes.HANDLE, ctypes.POINTER(SP_DEVICE_INTERFACE_DATA), ctypes.c_void_p,
+        wintypes.DWORD, ctypes.POINTER(wintypes.DWORD), ctypes.c_void_p
+    ]
+    setupapi.SetupDiDestroyDeviceInfoList.restype = wintypes.BOOL
+    setupapi.SetupDiDestroyDeviceInfoList.argtypes = [wintypes.HANDLE]
+
+    h_dev_info = setupapi.SetupDiGetClassDevsW(
+        ctypes.byref(GUID_DEVINTERFACE_USBMMIDD),
+        None,
+        None,
+        DIGCF_PRESENT | DIGCF_DEVICEINTERFACE
+    )
+    if h_dev_info == -1 or not h_dev_info:
+        return None
+
+    dev_data = SP_DEVICE_INTERFACE_DATA()
+    dev_data.cbSize = ctypes.sizeof(SP_DEVICE_INTERFACE_DATA)
+
+    if not setupapi.SetupDiEnumDeviceInterfaces(
+        h_dev_info, None, ctypes.byref(GUID_DEVINTERFACE_USBMMIDD), 0, ctypes.byref(dev_data)
+    ):
+        setupapi.SetupDiDestroyDeviceInfoList(h_dev_info)
+        return None
+
+    req_size = wintypes.DWORD(0)
+    setupapi.SetupDiGetDeviceInterfaceDetailW(h_dev_info, ctypes.byref(dev_data), None, 0, ctypes.byref(req_size), None)
+    buf = ctypes.create_string_buffer(req_size.value)
+    ctypes.memmove(buf, ctypes.byref(wintypes.DWORD(8)), 4)
+
+    if not setupapi.SetupDiGetDeviceInterfaceDetailW(h_dev_info, ctypes.byref(dev_data), buf, req_size.value, None, None):
+        setupapi.SetupDiDestroyDeviceInfoList(h_dev_info)
+        return None
+
+    path = ctypes.wstring_at(ctypes.addressof(buf) + 4)
+    setupapi.SetupDiDestroyDeviceInfoList(h_dev_info)
+    return path
+
+def send_virtual_display_ioctl(cmd_byte: int) -> bool:
+    kernel32 = ctypes.windll.kernel32
+    kernel32.CreateFileW.restype = wintypes.HANDLE
+    kernel32.CreateFileW.argtypes = [
+        wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD, ctypes.c_void_p,
+        wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE
+    ]
+    kernel32.DeviceIoControl.restype = wintypes.BOOL
+    kernel32.DeviceIoControl.argtypes = [
+        wintypes.HANDLE, wintypes.DWORD, ctypes.c_void_p, wintypes.DWORD,
+        ctypes.c_void_p, wintypes.DWORD, ctypes.POINTER(wintypes.DWORD), ctypes.c_void_p
+    ]
+    kernel32.CloseHandle.restype = wintypes.BOOL
+    kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+
+    path = get_virtual_device_path()
+    if not path:
+        raise RuntimeError("未檢測到虛擬顯示器驅動裝置介面 (GUID: {b5ffd75f-da40-4353-8ff8-b6daf6f1d8ca})")
+
+    GENERIC_READ = 0x80000000
+    GENERIC_WRITE = 0x40000000
+    FILE_SHARE_READ = 0x00000001
+    FILE_SHARE_WRITE = 0x00000002
+    OPEN_EXISTING = 3
+
+    h_dev = kernel32.CreateFileW(
+        path,
+        GENERIC_READ | GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        None,
+        OPEN_EXISTING,
+        0,
+        None
+    )
+    if h_dev == -1 or not h_dev:
+        raise RuntimeError(f"無法打開虛擬顯示器裝置 Handle, LastError={kernel32.GetLastError()}")
+
+    try:
+        in_buf = (ctypes.c_byte * 4)(cmd_byte, 0, 0, 0)
+        bytes_ret = wintypes.DWORD(0)
+        ok = kernel32.DeviceIoControl(
+            h_dev,
+            IOCTL_PLUG_MONITOR,
+            ctypes.byref(in_buf),
+            4,
+            None,
+            0,
+            ctypes.byref(bytes_ret),
+            None
+        )
+        if not ok:
+            raise RuntimeError(f"DeviceIoControl 發送失敗, LastError={kernel32.GetLastError()}")
+        return True
+    finally:
+        kernel32.CloseHandle(h_dev)
+
+def ensure_virtual_display_on():
+    mons = list_system_monitors()
+    virtual_mon = next((m for m in mons if m["is_virtual_candidate"]), None)
+    if virtual_mon:
+        return virtual_mon
+
+    send_virtual_display_ioctl(0x10)
+    for _ in range(20):
+        time.sleep(0.15)
+        mons = list_system_monitors()
+        virtual_mon = next((m for m in mons if m["is_virtual_candidate"]), None)
+        if virtual_mon:
+            return virtual_mon
+    raise TimeoutError("已發送 DeviceIoControl 插入指令，但等待 Windows DWM 註冊虛擬螢幕超時 (3秒)")
+
 VK_MAP = {
     "enter": 13,
     "return": 13,
@@ -153,6 +346,10 @@ def main():
     # diff
     p_diff = subparsers.add_parser("diff", help="比對 Visual Memory 快照差異")
 
+    # display
+    p_display = subparsers.add_parser("display", help="控制或查詢虛擬顯示器硬體狀態 (0 批次檔、0 UAC 彈窗)")
+    p_display.add_argument("action", choices=["on", "off", "status"], help="on=開啟, off=關閉, status=查詢狀態")
+
     args = parser.parse_args()
 
     if args.command == "list":
@@ -166,6 +363,10 @@ def main():
 
     elif args.command == "dispatch":
         hwnd = parse_hwnd(args.hwnd)
+        try:
+            ensure_virtual_display_on()
+        except Exception as e:
+            print(f"[WARN] 虛擬螢幕自動掛載防呆提示: {e}")
         res = asyncio.run(send_cmd({"action": "dispatch_to_virtual", "hwnd": hwnd}, wait_for_event="window_dispatched"))
         print(json.dumps(res, ensure_ascii=False, indent=2))
 
@@ -306,6 +507,42 @@ def main():
     elif args.command == "diff":
         res = asyncio.run(send_cmd({"action": "get_visual_diff"}, wait_for_event="visual_diff"))
         print(json.dumps(res, ensure_ascii=False, indent=2))
+
+    elif args.command == "display":
+        if args.action == "status":
+            mons = list_system_monitors()
+            print("[DISPLAY] 系統顯示器拓撲清單:")
+            for m in mons:
+                tag = "主要螢幕 🏠" if m["primary"] else "虛擬第二螢幕 🟢"
+                print(f"  - {m['name']}: {m['width']}x{m['height']} @ ({m['x']}, {m['y']}) [{tag}]")
+            has_virtual = any(m["is_virtual_candidate"] for m in mons)
+            if not has_virtual:
+                print("  提示: 目前虛擬螢幕處於拔除 (Off) 狀態。使用 `cockpit_cli.py display on` 即可瞬間掛載。")
+
+        elif args.action == "on":
+            print("[DISPLAY] 正在發送 Win32 DeviceIoControl 指令掛載虛擬顯示器 (0 批次檔、0 UAC)...")
+            try:
+                vm = ensure_virtual_display_on()
+                print(f"[SUCCESS] 虛擬顯示器已就緒！")
+                print(f"  名稱: {vm['name']}")
+                print(f"  解析度: {vm['width']}x{vm['height']}")
+                print(f"  座標: ({vm['x']}, {vm['y']})")
+            except Exception as e:
+                print(f"[ERROR] 掛載失敗: {e}")
+                sys.exit(1)
+
+        elif args.action == "off":
+            print("[DISPLAY] 正在發送 Win32 DeviceIoControl 指令拔除虛擬顯示器...")
+            try:
+                send_virtual_display_ioctl(0x00)
+                time.sleep(0.5)
+                mons = list_system_monitors()
+                print(f"[SUCCESS] 虛擬顯示器已成功拔除，系統已恢復為單螢幕狀態。")
+                for m in mons:
+                    print(f"  - {m['name']}: {m['width']}x{m['height']} @ ({m['x']}, {m['y']})")
+            except Exception as e:
+                print(f"[ERROR] 拔除失敗: {e}")
+                sys.exit(1)
 
 if __name__ == "__main__":
     main()

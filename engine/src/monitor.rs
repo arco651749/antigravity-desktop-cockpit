@@ -19,6 +19,83 @@ pub struct MonitorDetail {
     pub is_virtual_candidate: bool,
 }
 
+// Amyuni / RustDesk IDD 裝置介面 GUID: {b5ffd75f-da40-4353-8ff8-b6daf6f1d8ca}
+const GUID_DEVINTERFACE_USBMMIDD: windows::core::GUID =
+    windows::core::GUID::from_u128(0xb5ffd75f_da40_4353_8ff8_b6daf6f1d8ca);
+const IOCTL_PLUG_MONITOR: u32 = 2307084; // 0x23340C
+
+const DIGCF_PRESENT: u32 = 0x00000002;
+const DIGCF_DEVICEINTERFACE: u32 = 0x00000010;
+
+const GENERIC_READ: u32 = 0x80000000;
+const GENERIC_WRITE: u32 = 0x40000000;
+const OPEN_EXISTING: u32 = 3;
+const FILE_SHARE_READ: u32 = 0x00000001;
+const FILE_SHARE_WRITE: u32 = 0x00000002;
+
+#[repr(C)]
+struct SpDeviceInterfaceData {
+    cb_size: u32,
+    interface_class_guid: windows::core::GUID,
+    flags: u32,
+    reserved: usize,
+}
+
+#[link(name = "setupapi")]
+extern "system" {
+    fn SetupDiGetClassDevsW(
+        class_guid: *const windows::core::GUID,
+        enumerator: *const u16,
+        hwnd_parent: isize,
+        flags: u32,
+    ) -> isize;
+
+    fn SetupDiEnumDeviceInterfaces(
+        device_info_set: isize,
+        device_info_data: *const std::ffi::c_void,
+        interface_class_guid: *const windows::core::GUID,
+        member_index: u32,
+        device_interface_data: *mut SpDeviceInterfaceData,
+    ) -> BOOL;
+
+    fn SetupDiGetDeviceInterfaceDetailW(
+        device_info_set: isize,
+        device_interface_data: *const SpDeviceInterfaceData,
+        device_interface_detail_data: *mut u8,
+        device_interface_detail_data_size: u32,
+        required_size: *mut u32,
+        device_info_data: *mut std::ffi::c_void,
+    ) -> BOOL;
+
+    fn SetupDiDestroyDeviceInfoList(device_info_set: isize) -> BOOL;
+}
+
+#[link(name = "kernel32")]
+extern "system" {
+    fn CreateFileW(
+        lp_file_name: *const u16,
+        dw_desired_access: u32,
+        dw_share_mode: u32,
+        lp_security_attributes: *const std::ffi::c_void,
+        dw_creation_disposition: u32,
+        dw_flags_and_attributes: u32,
+        h_template_file: isize,
+    ) -> isize;
+
+    fn DeviceIoControl(
+        h_device: isize,
+        dw_io_control_code: u32,
+        lp_in_buffer: *const u8,
+        n_in_buffer_size: u32,
+        lp_out_buffer: *mut u8,
+        n_out_buffer_size: u32,
+        lp_bytes_returned: *mut u32,
+        lp_overlapped: *mut std::ffi::c_void,
+    ) -> BOOL;
+
+    fn CloseHandle(h_object: isize) -> BOOL;
+}
+
 pub struct MonitorManager;
 
 impl MonitorManager {
@@ -77,14 +154,179 @@ impl MonitorManager {
         BOOL(1)
     }
 
+    /// 取得底層虛擬顯示器裝置介面路徑
+    pub fn get_virtual_device_path() -> Option<Vec<u16>> {
+        unsafe {
+            let h_dev_info = SetupDiGetClassDevsW(
+                &GUID_DEVINTERFACE_USBMMIDD,
+                std::ptr::null(),
+                0,
+                DIGCF_PRESENT | DIGCF_DEVICEINTERFACE,
+            );
+            if h_dev_info == -1 || h_dev_info == 0 {
+                return None;
+            }
+
+            let mut dev_data = SpDeviceInterfaceData {
+                cb_size: size_of::<SpDeviceInterfaceData>() as u32,
+                interface_class_guid: GUID_DEVINTERFACE_USBMMIDD,
+                flags: 0,
+                reserved: 0,
+            };
+
+            if SetupDiEnumDeviceInterfaces(
+                h_dev_info,
+                std::ptr::null(),
+                &GUID_DEVINTERFACE_USBMMIDD,
+                0,
+                &mut dev_data,
+            ).as_bool() == false
+            {
+                let _ = SetupDiDestroyDeviceInfoList(h_dev_info);
+                return None;
+            }
+
+            let mut req_size = 0u32;
+            let _ = SetupDiGetDeviceInterfaceDetailW(
+                h_dev_info,
+                &dev_data,
+                std::ptr::null_mut(),
+                0,
+                &mut req_size,
+                std::ptr::null_mut(),
+            );
+
+            if req_size == 0 {
+                let _ = SetupDiDestroyDeviceInfoList(h_dev_info);
+                return None;
+            }
+
+            let mut buf = vec![0u8; req_size as usize];
+            // 在 64-bit 系統上 SP_DEVICE_INTERFACE_DETAIL_DATA_W cbSize 為 8
+            let cb_size_val: u32 = 8;
+            std::ptr::copy_nonoverlapping(
+                &cb_size_val as *const u32 as *const u8,
+                buf.as_mut_ptr(),
+                4,
+            );
+
+            if SetupDiGetDeviceInterfaceDetailW(
+                h_dev_info,
+                &dev_data,
+                buf.as_mut_ptr(),
+                req_size,
+                std::ptr::null_mut(),
+                std::ptr::null_mut(),
+            ).as_bool() == false
+            {
+                let _ = SetupDiDestroyDeviceInfoList(h_dev_info);
+                return None;
+            }
+
+            let _ = SetupDiDestroyDeviceInfoList(h_dev_info);
+
+            // 路徑位於 offset 4 開始的 UTF-16 字串
+            let path_slice = std::slice::from_raw_parts(
+                buf.as_ptr().add(4) as *const u16,
+                ((req_size - 4) / 2) as usize,
+            );
+
+            let mut path_u16 = Vec::new();
+            for &c in path_slice {
+                path_u16.push(c);
+                if c == 0 {
+                    break;
+                }
+            }
+            if path_u16.last() != Some(&0) {
+                path_u16.push(0);
+            }
+
+            Some(path_u16)
+        }
+    }
+
+    /// 發送二進位 IOCTL 控制虛擬顯示器 (0x10=插入, 0x00=拔除)
+    pub fn send_virtual_display_ioctl(cmd_byte: u8) -> Result<(), String> {
+        let path = Self::get_virtual_device_path()
+            .ok_or_else(|| "系統未檢測到虛擬顯示器驅動介面 (usbmmidd)".to_string())?;
+
+        unsafe {
+            let h_dev = CreateFileW(
+                path.as_ptr(),
+                GENERIC_READ | GENERIC_WRITE,
+                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                std::ptr::null(),
+                OPEN_EXISTING,
+                0,
+                0,
+            );
+
+            if h_dev == -1 || h_dev == 0 {
+                return Err(format!("無法開啟虛擬顯示器裝置 Handle, LastError={}", std::io::Error::last_os_error()));
+            }
+
+            let cmd: [u8; 4] = [cmd_byte, 0, 0, 0];
+            let mut bytes_ret = 0u32;
+            let ok = DeviceIoControl(
+                h_dev,
+                IOCTL_PLUG_MONITOR,
+                cmd.as_ptr(),
+                4,
+                std::ptr::null_mut(),
+                0,
+                &mut bytes_ret,
+                std::ptr::null_mut(),
+            );
+
+            let _ = CloseHandle(h_dev);
+
+            if ok.as_bool() {
+                Ok(())
+            } else {
+                Err(format!("DeviceIoControl 發送失敗, LastError={}", std::io::Error::last_os_error()))
+            }
+        }
+    }
+
+    /// 透過程式碼插入虛擬螢幕 (0 批次檔、0 UAC 彈窗)
+    pub fn plug_in_virtual_display() -> Result<(), String> {
+        Self::send_virtual_display_ioctl(0x10)
+    }
+
+    /// 透過程式碼拔除虛擬螢幕 (恢復單螢幕)
+    pub fn plug_out_virtual_display() -> Result<(), String> {
+        Self::send_virtual_display_ioctl(0x00)
+    }
+
+    /// 確保虛擬螢幕存在：若不存在則透過 DeviceIoControl 自動瞬態掛載，並等待 DWM 註冊
+    pub fn ensure_virtual_monitor() -> Result<MonitorDetail, String> {
+        let monitors = Self::list_monitors();
+        if let Some(target) = monitors.iter().find(|m| m.is_virtual_candidate).cloned() {
+            return Ok(target);
+        }
+
+        println!("[MonitorManager] 系統未檢測到虛擬螢幕，正在透過 DeviceIoControl 自動掛載 (cmd=0x10)...");
+        Self::plug_in_virtual_display()?;
+
+        // 等待 DWM 註冊並重劃分拓撲 (最多 3 秒)
+        let start = std::time::Instant::now();
+        while start.elapsed() < std::time::Duration::from_millis(3000) {
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            let mons = Self::list_monitors();
+            if let Some(target) = mons.iter().find(|m| m.is_virtual_candidate).cloned() {
+                println!("[MonitorManager] 虛擬螢幕掛載成功: {} ({}x{} @ X={})", target.name, target.width, target.height, target.x);
+                return Ok(target);
+            }
+        }
+
+        Err("已發送 DeviceIoControl 插入指令，但等待 Windows 註冊虛擬螢幕超時 (3秒)".into())
+    }
+
     pub fn dispatch_to_virtual(hwnd_val: isize) -> Result<MonitorDetail, String> {
         crate::capture::ensure_default_desktop();
-        let monitors = Self::list_monitors();
-        let target = monitors
-            .iter()
-            .find(|m| m.is_virtual_candidate)
-            .cloned()
-            .ok_or_else(|| "系統未檢測到虛擬第二螢幕，請先啟用虛擬顯示器驅動".to_string())?;
+        // 核心自動化：若虛擬螢幕不存在，自動透過 IOCTL 開啟並等待，徹底杜絕手動執行批次檔！
+        let target = Self::ensure_virtual_monitor()?;
 
         unsafe {
             let hwnd = HWND(hwnd_val as *mut _);

@@ -71,6 +71,10 @@ pub enum ClientCommand {
     DispatchToVirtual { hwnd: isize },
     #[serde(rename = "restore_to_primary")]
     RestoreToPrimary { hwnd: isize },
+    #[serde(rename = "plug_in_virtual_display")]
+    PlugInVirtualDisplay,
+    #[serde(rename = "plug_out_virtual_display")]
+    PlugOutVirtualDisplay,
     #[serde(rename = "set_window")]
     SetWindow { hwnd: isize },
     #[serde(rename = "set_fps")]
@@ -686,6 +690,54 @@ impl StreamServer {
                                 Err(e) => {
                                     let resp = ServerEvent {
                                         event: "window_restored".into(),
+                                        status: "error".into(),
+                                        message: Some(e),
+                                        data: None,
+                                    };
+                                    let _ = ctrl_tx.send(serde_json::to_string(&resp)?).await;
+                                }
+                            }
+                        }
+                        Ok(ClientCommand::PlugInVirtualDisplay) => {
+                            match MonitorManager::plug_in_virtual_display() {
+                                Ok(_) => {
+                                    std::thread::sleep(Duration::from_millis(500));
+                                    let monitors = MonitorManager::list_monitors();
+                                    let resp = ServerEvent {
+                                        event: "virtual_display_plugged".into(),
+                                        status: "ok".into(),
+                                        message: Some("已成功透過 Win32 DeviceIoControl 掛載虛擬螢幕 (0 批次檔、0 UAC)".into()),
+                                        data: Some(serde_json::to_value(monitors)?),
+                                    };
+                                    let _ = ctrl_tx.send(serde_json::to_string(&resp)?).await;
+                                }
+                                Err(e) => {
+                                    let resp = ServerEvent {
+                                        event: "virtual_display_plugged".into(),
+                                        status: "error".into(),
+                                        message: Some(e),
+                                        data: None,
+                                    };
+                                    let _ = ctrl_tx.send(serde_json::to_string(&resp)?).await;
+                                }
+                            }
+                        }
+                        Ok(ClientCommand::PlugOutVirtualDisplay) => {
+                            match MonitorManager::plug_out_virtual_display() {
+                                Ok(_) => {
+                                    std::thread::sleep(Duration::from_millis(500));
+                                    let monitors = MonitorManager::list_monitors();
+                                    let resp = ServerEvent {
+                                        event: "virtual_display_unplugged".into(),
+                                        status: "ok".into(),
+                                        message: Some("已成功透過 Win32 DeviceIoControl 卸載虛擬螢幕 (恢復單螢幕)".into()),
+                                        data: Some(serde_json::to_value(monitors)?),
+                                    };
+                                    let _ = ctrl_tx.send(serde_json::to_string(&resp)?).await;
+                                }
+                                Err(e) => {
+                                    let resp = ServerEvent {
+                                        event: "virtual_display_unplugged".into(),
                                         status: "error".into(),
                                         message: Some(e),
                                         data: None,

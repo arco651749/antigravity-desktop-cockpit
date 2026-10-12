@@ -38,8 +38,10 @@ Desktop Cockpit 串流引擎（`gui-stream-engine`）本機監聽 `127.0.0.1:482
 | Action (`action`) | 功能說明 | 核心參數 | AI / 程式調用場景 |
 | :--- | :--- | :--- | :--- |
 | **`get_windows`** | 查詢系統所有在線活動視窗清單 | 無 | 尋找目標應用程式的 HWND 視窗控制代碼 |
-| **`get_monitors`** | 查詢 Windows 顯示器拓撲 | 無 | 偵測虛擬第二螢幕（如 `\\.\DISPLAY82`）狀態 |
-| **`dispatch_to_virtual`** | 將視窗挪移至虛擬第二螢幕 | `hwnd` | 視窗隔離：移出主螢幕防止覆蓋寫 Code 視窗 |
+| **`get_monitors`** | 查詢 Windows 顯示器拓撲 | 無 | 偵測虛擬第二螢幕狀態 |
+| **`plug_in_virtual_display`** | 程式化掛載虛擬第二螢幕 (0 批次檔、0 UAC) | 無 | 透過 Win32 DeviceIoControl 直通掛載虛擬螢幕 |
+| **`plug_out_virtual_display`** | 程式化卸載虛擬第二螢幕 (恢復單螢幕) | 無 | 透過 Win32 DeviceIoControl 直通拔除虛擬螢幕 |
+| **`dispatch_to_virtual`** | 將視窗挪移至虛擬第二螢幕 | `hwnd` | 視窗隔離：未在線時自動自癒掛載並移出主螢幕 |
 | **`restore_to_primary`** | 將視窗移回主實體螢幕 | `hwnd` | 任務完成後將視窗還原回主螢幕給使用者查看 |
 | **`set_window`** | 聚焦並鎖定目標串流視窗 | `hwnd` | 切換串流目標，並自動還原最小化視窗 |
 | **`set_capture_mode`** | 設定串流擷取與輸入模式 | `mode` (`"direct"` / `"background"`) | 強制鎖定為 DXGI 直通模式 |
