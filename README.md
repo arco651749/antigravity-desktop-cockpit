@@ -52,6 +52,13 @@ graph LR
 
 ---
 
+## 📚 開發與 API 文件
+
+- [API 參考手冊 (API Reference)](./API_REFERENCE.md)：完整的 WebSocket JSON 協議、全指令 Schema 與 Python/Node.js 調用範例。
+- [AI Skill 規範 (SKILL.md)](./skills/desktop-cockpit/SKILL.md)：AI Agent 操作指引與最佳實踐。
+
+---
+
 ## 🚀 安裝與使用
 
 外掛已安裝至 Antigravity 全域外掛目錄：
@@ -60,3 +67,4 @@ graph LR
 ```
 
 在 Antigravity 側邊面板（Auxiliary Pane）中開啟 **Desktop Cockpit** 即可立即使用！
+
