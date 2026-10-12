@@ -119,7 +119,7 @@ function connectWebSocket() {
         } else if (msg.event === 'virtual_display_plugged' || msg.event === 'virtual_display_unplugged') {
           log('顯示控制', msg.message || '虛擬顯示器狀態已變更', 'sys');
           if (msg.data && Array.isArray(msg.data)) {
-            updateMonitorStatus(msg.data);
+            updateMonitors(msg.data);
           } else if (ws && ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({ action: 'get_monitors' }));
           }
@@ -206,10 +206,12 @@ function updateMonitors(monitors) {
   if (detectedVirtualMon && virtualMonStatus) {
     virtualMonStatus.className = 'status-pill status-virtual';
     virtualMonText.textContent = `🟢 虛擬顯示器在線 (${detectedVirtualMon.width}x${detectedVirtualMon.height})`;
+    if (btnToggleDisplay) btnToggleDisplay.textContent = '🔌 拔除螢幕';
     log('顯示拓撲', `檢測到虛擬螢幕: ${detectedVirtualMon.name} (${detectedVirtualMon.width}x${detectedVirtualMon.height} @ X=${detectedVirtualMon.x})`, 'sys');
   } else if (virtualMonStatus) {
     virtualMonStatus.className = 'status-pill status-idle';
     virtualMonText.textContent = '⚪ 虛擬顯示器未啟用';
+    if (btnToggleDisplay) btnToggleDisplay.textContent = '🔌 開啟螢幕';
   }
 }
 
@@ -222,6 +224,14 @@ function setVirtualBadgeActive(active, monData) {
     virtualMonStatus.className = 'status-pill status-virtual';
     virtualMonText.textContent = `🟢 虛擬顯示器在線 (${detectedVirtualMon.width}x${detectedVirtualMon.height})`;
   }
+}
+
+if (virtualMonStatus) {
+  virtualMonStatus.style.cursor = 'pointer';
+  virtualMonStatus.title = '點擊切換虛擬第二螢幕狀態 (0 批次檔、0 UAC)';
+  virtualMonStatus.addEventListener('click', () => {
+    if (btnToggleDisplay) btnToggleDisplay.click();
+  });
 }
 
 // Virtual display dispatch & recall actions
