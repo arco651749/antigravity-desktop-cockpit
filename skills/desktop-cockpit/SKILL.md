@@ -74,3 +74,44 @@ AI Agent 或終端使用者可直接調用 Python CLI 執行全流程控制：
 1. **零干擾保證**：所有操作必須發送至虛擬第二螢幕區域。
 2. **人類第一優先仲裁**：發送指令時一律帶上 `"source": "agent"`。當使用者在右側面板進行手動操作時，引擎會自動暫停 AI 動作 1.5 秒禮讓人類。
 3. **單一職責文字輸入**：一般文字輸入一律使用 `type_text` 或帶有 `char` 屬性之 `key`，杜絕任何重複字元連發。
+
+---
+
+## 4. 非 UIA 視窗之無障礙樹視覺抽取 (`screen2ax_engine.py`)
+
+針對 **Chromium 網頁、Canvas、Flutter、Electron、自繪視窗** 等無法直接透過 Windows 原生 UIA 拋出 DOM 節點的目標程式，可使用 Screen2AX 視覺引擎自動將截圖重構為**具備父子容器階層的合成無障礙語意樹 (Synthetic UIA Tree)**，並具備**真實像素 Y 軸偏移校準機制**。
+
+### CLI 命令列使用方式
+
+```powershell
+# 1. 產生標準 UIA JSON 樹狀資料與高解析度檢視標註圖 (預設 0px 校準)
+python.exe -X utf8 screen2ax_engine.py "<截圖路徑.jpg>" -o uia_tree.json -r annotated_view.jpg --demo-calendar
+
+# 2. 針對視窗外殼/分頁列/標籤徽章進行 Y 軸偏移校準 (--y-offset)
+# 例如若檢測框整體偏高 47px，可指定 --y-offset 47 進行精確下移貼合
+python.exe -X utf8 screen2ax_engine.py "<截圖路徑.jpg>" -o uia_tree.json -r annotated_view.jpg --y-offset 0
+```
+
+### Python API 調用範例
+
+```python
+from screen2ax_engine import Screen2AXEngine
+
+# 初始化引擎並設定 Y 軸校準 Offset (例如 0 或補償值)
+engine = Screen2AXEngine(y_offset=0)
+
+# 1. 組裝標準 UIA 樹狀資料結構 (符合 Windows IUIAutomationElement 規範)
+uia_tree = engine.build_synthetic_tree(
+    image_size=(1920, 1080),
+    containers=containers,
+    elements=elements,
+    window_title="Google Calendar"
+)
+
+# 2. 繪製檢視標註圖 (自動套用微軟正黑體，防止方塊缺字，標籤自適應置於框體下方)
+engine.render_annotated_view("screen.jpg", "annotated.jpg", containers, elements)
+```
+
+### 關鍵參數說明：`--y-offset` 校準機制
+* **產生原因**：純視覺模型或人工估算在全螢幕截圖中，常因「瀏覽器外殼標題列 (約 88~95px)」、「等比縮放 Letterbox 填充」、或「標籤徽章繪製在框體上方」而產生 $30 \sim 50\text{px}$ 的向上偏差。
+* **解決方案**：透過 `y_offset` 參數，引擎會在組裝 UIA 節點與繪圖時自動將所有容器與控制項進行像素級重定位，確保 Agent 取得的 `CenterPoint` 精準落入按鈕熱區，杜絕滑鼠點擊落空。

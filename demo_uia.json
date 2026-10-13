@@ -1,0 +1,294 @@
+{
+  "Framework": "Screen2AX_Synthetic_UIA",
+  "Calibration": {
+    "y_offset_applied": 0,
+    "screen_width": 1920,
+    "screen_height": 1080
+  },
+  "Root": {
+    "AutomationId": "screen2ax_root",
+    "ControlType": "Window",
+    "Name": "calendar_current_view.jpg",
+    "BoundingRectangle": [
+      0,
+      0,
+      1920,
+      1080
+    ],
+    "Children": [
+      {
+        "AutomationId": "container_1",
+        "ControlType": "ToolBar",
+        "Name": "AXToolbar: CalendarMainHeader",
+        "BoundingRectangle": [
+          10,
+          95,
+          1900,
+          45
+        ],
+        "Children": [
+          {
+            "AutomationId": "elem_1",
+            "ControlType": "Button",
+            "Name": "Main Menu (☰)",
+            "BoundingRectangle": [
+              15,
+              100,
+              27,
+              32
+            ],
+            "CenterPoint": [
+              28,
+              116
+            ],
+            "IsEnabled": true
+          },
+          {
+            "AutomationId": "elem_2",
+            "ControlType": "Button",
+            "Name": "Today",
+            "BoundingRectangle": [
+              135,
+              98,
+              50,
+              34
+            ],
+            "CenterPoint": [
+              160,
+              115
+            ],
+            "IsEnabled": true
+          },
+          {
+            "AutomationId": "elem_3",
+            "ControlType": "Text",
+            "Name": "October 2026",
+            "BoundingRectangle": [
+              236,
+              95,
+              99,
+              30
+            ],
+            "CenterPoint": [
+              285,
+              110
+            ],
+            "IsEnabled": true
+          },
+          {
+            "AutomationId": "elem_4",
+            "ControlType": "ComboBox",
+            "Name": "View: Month ▾",
+            "BoundingRectangle": [
+              825,
+              98,
+              60,
+              34
+            ],
+            "CenterPoint": [
+              855,
+              115
+            ],
+            "IsEnabled": true
+          }
+        ]
+      },
+      {
+        "AutomationId": "container_2",
+        "ControlType": "Pane",
+        "Name": "AXGroup: NavigationSidebar",
+        "BoundingRectangle": [
+          10,
+          150,
+          225,
+          790
+        ],
+        "Children": [
+          {
+            "AutomationId": "elem_5",
+            "ControlType": "Button",
+            "Name": "Create Event (+)",
+            "BoundingRectangle": [
+              18,
+              160,
+              77,
+              38
+            ],
+            "CenterPoint": [
+              56,
+              179
+            ],
+            "IsEnabled": true
+          },
+          {
+            "AutomationId": "elem_6",
+            "ControlType": "Calendar",
+            "Name": "MiniMonthView",
+            "BoundingRectangle": [
+              15,
+              230,
+              115,
+              205
+            ],
+            "CenterPoint": [
+              72,
+              332
+            ],
+            "IsEnabled": true
+          },
+          {
+            "AutomationId": "elem_7",
+            "ControlType": "CheckBox",
+            "Name": "Cal: 黃銘樟",
+            "BoundingRectangle": [
+              18,
+              582,
+              77,
+              26
+            ],
+            "CenterPoint": [
+              56,
+              595
+            ],
+            "IsEnabled": true
+          }
+        ]
+      },
+      {
+        "AutomationId": "container_3",
+        "ControlType": "Table",
+        "Name": "AXTable: MonthCalendarGrid",
+        "BoundingRectangle": [
+          240,
+          150,
+          1670,
+          790
+        ],
+        "Children": [
+          {
+            "AutomationId": "elem_8",
+            "ControlType": "Button",
+            "Name": "11:30am 台鐵 2013 區間快 (板橋 ➔ 竹北)",
+            "BoundingRectangle": [
+              728,
+              558,
+              222,
+              20
+            ],
+            "CenterPoint": [
+              839,
+              568
+            ],
+            "IsEnabled": true
+          },
+          {
+            "AutomationId": "elem_9",
+            "ControlType": "Button",
+            "Name": "2pm 專家座談會",
+            "BoundingRectangle": [
+              966,
+              558,
+              214,
+              20
+            ],
+            "CenterPoint": [
+              1073,
+              568
+            ],
+            "IsEnabled": true
+          },
+          {
+            "AutomationId": "elem_10",
+            "ControlType": "Button",
+            "Name": "2pm 產業東擴合作 無人機生態鏈結",
+            "BoundingRectangle": [
+              966,
+              582,
+              214,
+              22
+            ],
+            "CenterPoint": [
+              1073,
+              593
+            ],
+            "IsEnabled": true
+          }
+        ]
+      },
+      {
+        "AutomationId": "container_4",
+        "ControlType": "DataItem",
+        "Name": "AXCell: Tue 13 (Today)",
+        "BoundingRectangle": [
+          720,
+          532,
+          235,
+          183
+        ],
+        "Children": [
+          {
+            "AutomationId": "elem_8",
+            "ControlType": "Button",
+            "Name": "11:30am 台鐵 2013 區間快 (板橋 ➔ 竹北)",
+            "BoundingRectangle": [
+              728,
+              558,
+              222,
+              20
+            ],
+            "CenterPoint": [
+              839,
+              568
+            ],
+            "IsEnabled": true
+          }
+        ]
+      },
+      {
+        "AutomationId": "container_5",
+        "ControlType": "DataItem",
+        "Name": "AXCell: Wed 14",
+        "BoundingRectangle": [
+          960,
+          532,
+          235,
+          183
+        ],
+        "Children": [
+          {
+            "AutomationId": "elem_9",
+            "ControlType": "Button",
+            "Name": "2pm 專家座談會",
+            "BoundingRectangle": [
+              966,
+              558,
+              214,
+              20
+            ],
+            "CenterPoint": [
+              1073,
+              568
+            ],
+            "IsEnabled": true
+          },
+          {
+            "AutomationId": "elem_10",
+            "ControlType": "Button",
+            "Name": "2pm 產業東擴合作 無人機生態鏈結",
+            "BoundingRectangle": [
+              966,
+              582,
+              214,
+              22
+            ],
+            "CenterPoint": [
+              1073,
+              593
+            ],
+            "IsEnabled": true
+          }
+        ]
+      }
+    ]
+  }
+}
