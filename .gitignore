@@ -11,3 +11,13 @@ engine/*.png
 *.tmp
 
 RPA/
+
+# Security & Secrets (Never track or commit)
+.secrets/
+*recovery-codes*
+*.key
+*.pem
+
+# Python
+__pycache__/
+*.py[cod]

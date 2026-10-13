@@ -32,18 +32,20 @@ AI Agent 可直接透過本機 WebSocket 連線至串流引擎發送 JSON 指令
 
 ### CLI 命令列快捷操作 (`cockpit_cli.py`)
 
+> **腳本位置**：`cockpit_cli.py` 與 `screen2ax_engine.py` 位於外掛根目錄 `d:\AntiGravity\Agent-Study\antigravity-desktop-cockpit\`（即本 SKILL.md 往上兩層）。以下範例一律使用完整路徑，不依賴目前工作目錄。
+
 AI Agent 或終端使用者可直接調用 Python CLI 執行全流程控制：
 - **虛擬螢幕硬體控制 (零 UAC 彈窗)**：
-  - `python.exe -X utf8 cockpit_cli.py display on`：掛載虛擬第二螢幕。
-  - `python.exe -X utf8 cockpit_cli.py display off`：拔除虛擬螢幕，恢復為單螢幕。
-  - `python.exe -X utf8 cockpit_cli.py display status`：檢視所有顯示器拓撲與在線狀態。
+  - `python.exe -X utf8 d:\AntiGravity\Agent-Study\antigravity-desktop-cockpit\cockpit_cli.py display on`：掛載虛擬第二螢幕。
+  - `python.exe -X utf8 d:\AntiGravity\Agent-Study\antigravity-desktop-cockpit\cockpit_cli.py display off`：拔除虛擬螢幕，恢復為單螢幕。
+  - `python.exe -X utf8 d:\AntiGravity\Agent-Study\antigravity-desktop-cockpit\cockpit_cli.py display status`：檢視所有顯示器拓撲與在線狀態。
 - **視窗派駐 (具備自動自癒掛載機制)**：
-  - `python.exe -X utf8 cockpit_cli.py dispatch <hwnd>`：即使虛擬螢幕當前未開啟，指令會自動透過底層 IOCTL 掛載虛擬螢幕並精確派駐。
-  - `python.exe -X utf8 cockpit_cli.py restore <hwnd>`：將視窗移回主螢幕。
+  - `python.exe -X utf8 d:\AntiGravity\Agent-Study\antigravity-desktop-cockpit\cockpit_cli.py dispatch <hwnd>`：即使虛擬螢幕當前未開啟，指令會自動透過底層 IOCTL 掛載虛擬螢幕並精確派駐。
+  - `python.exe -X utf8 d:\AntiGravity\Agent-Study\antigravity-desktop-cockpit\cockpit_cli.py restore <hwnd>`：將視窗移回主螢幕。
 - **畫面截取與即時輸入**：
-  - `python.exe -X utf8 cockpit_cli.py capture -o screen.jpg`：截取 60 FPS DXGI 畫面。
-  - `python.exe -X utf8 cockpit_cli.py type "文字內容"`：注入多語系文字。
-  - `python.exe -X utf8 cockpit_cli.py hotkey "ctrl+l"`：發送快捷鍵。
+  - `python.exe -X utf8 d:\AntiGravity\Agent-Study\antigravity-desktop-cockpit\cockpit_cli.py capture -o screen.jpg`：截取 60 FPS DXGI 畫面。
+  - `python.exe -X utf8 d:\AntiGravity\Agent-Study\antigravity-desktop-cockpit\cockpit_cli.py type "文字內容"`：注入多語系文字。
+  - `python.exe -X utf8 d:\AntiGravity\Agent-Study\antigravity-desktop-cockpit\cockpit_cli.py hotkey "ctrl+l"`：發送快捷鍵。
 
 完整參數規範請參閱：[`API_REFERENCE.md`](../../API_REFERENCE.md)
 
@@ -85,16 +87,21 @@ AI Agent 或終端使用者可直接調用 Python CLI 執行全流程控制：
 
 ```powershell
 # 1. 產生標準 UIA JSON 樹狀資料與高解析度檢視標註圖 (預設 0px 校準)
-python.exe -X utf8 screen2ax_engine.py "<截圖路徑.jpg>" -o uia_tree.json -r annotated_view.jpg --demo-calendar
+# 注意：--demo-calendar 僅為示範用參數，實際使用時請移除
+python.exe -X utf8 d:\AntiGravity\Agent-Study\antigravity-desktop-cockpit\screen2ax_engine.py "<截圖路徑.jpg>" -o uia_tree.json -r annotated_view.jpg --demo-calendar
 
 # 2. 針對視窗外殼/分頁列/標籤徽章進行 Y 軸偏移校準 (--y-offset)
 # 例如若檢測框整體偏高 47px，可指定 --y-offset 47 進行精確下移貼合
-python.exe -X utf8 screen2ax_engine.py "<截圖路徑.jpg>" -o uia_tree.json -r annotated_view.jpg --y-offset 0
+python.exe -X utf8 d:\AntiGravity\Agent-Study\antigravity-desktop-cockpit\screen2ax_engine.py "<截圖路徑.jpg>" -o uia_tree.json -r annotated_view.jpg --y-offset 0
 ```
 
 ### Python API 調用範例
 
 ```python
+import sys
+# 若在外部專案調用，請確保加入外掛目錄至 sys.path
+sys.path.append(r"d:\AntiGravity\Agent-Study\antigravity-desktop-cockpit")
+
 from screen2ax_engine import Screen2AXEngine
 
 # 初始化引擎並設定 Y 軸校準 Offset (例如 0 或補償值)
