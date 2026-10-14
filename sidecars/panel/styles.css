@@ -238,3 +238,316 @@ select:hover, button:hover {
   70% { box-shadow: 0 0 0 6px rgba(234, 67, 53, 0); border-color: #ea4335; }
   100% { box-shadow: 0 0 0 0 rgba(234, 67, 53, 0); }
 }
+
+/* ==========================================================================
+   Desktop Cockpit Annotation & Visual Feedback Styles
+   ========================================================================== */
+
+/* Annotation Trigger Button */
+.btn-annotate {
+  background: linear-gradient(135deg, #ea580c, #c2410c);
+  color: #fff;
+  border: 1px solid #f97316;
+  font-weight: 700;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  box-shadow: 0 2px 6px rgba(234, 88, 12, 0.35);
+}
+.btn-annotate:hover {
+  background: linear-gradient(135deg, #f97316, #ea580c);
+  box-shadow: 0 0 10px rgba(249, 115, 22, 0.5);
+}
+.btn-annotate.active {
+  background: #16a34a !important;
+  border-color: #22c55e !important;
+  box-shadow: 0 0 12px rgba(34, 197, 94, 0.6) !important;
+}
+
+/* Canvas Stage & Overlay */
+.canvas-stage {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  max-width: 100%;
+}
+
+/* Ensure hidden elements are strictly hidden regardless of other styles */
+[hidden],
+.annotation-canvas[hidden],
+.cockpit-annot-dock[hidden],
+.console-pane[hidden],
+.annot-send-popover[hidden] {
+  display: none !important;
+}
+
+.annotation-canvas {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  cursor: crosshair;
+  z-index: 80;
+  pointer-events: auto;
+}
+.annotation-canvas:not([hidden]) {
+  display: block;
+}
+
+/* Bottom Docked Annotation Toolbar (Replaces Log Area during annotation) */
+.cockpit-annot-dock {
+  background: #11121b;
+  border-top: 1px solid rgba(66, 133, 244, 0.55);
+  box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.45);
+  min-height: 80px;
+  max-height: 80px;
+  height: 80px;
+  padding: 8px 14px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  user-select: none;
+  overflow-y: auto;
+  z-index: 50;
+  animation: annotDockFadeIn 0.2s ease;
+  flex-wrap: wrap;
+}
+.cockpit-annot-dock:not([hidden]) {
+  display: flex;
+}
+.cockpit-annot-dock[hidden] {
+  display: none !important;
+}
+
+.console-pane[hidden] {
+  display: none !important;
+}
+
+@keyframes annotDockFadeIn {
+  from { opacity: 0; transform: translateY(6px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.annot-tool-group, .annot-size-group, .annot-action-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.annot-divider {
+  width: 1px;
+  height: 18px;
+  background: var(--border-color);
+  margin: 0 4px;
+}
+
+.annot-btn {
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 4px 6px;
+  font-size: 14px;
+  cursor: pointer;
+  line-height: 1;
+  transition: all 0.15s;
+  color: var(--text-main);
+}
+
+.annot-btn:hover {
+  background: var(--bg-surface);
+}
+
+.annot-btn.active {
+  background: rgba(66, 133, 244, 0.25);
+  border-color: var(--accent-blue);
+  box-shadow: 0 0 8px rgba(66, 133, 244, 0.4);
+}
+
+.annot-color-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.color-dot {
+  width: 15px;
+  height: 15px;
+  border-radius: 50%;
+  cursor: pointer;
+  border: 2px solid transparent;
+  transition: transform 0.15s, border-color 0.15s;
+}
+
+.color-dot:hover {
+  transform: scale(1.15);
+}
+
+.color-dot.active {
+  border-color: #ffffff;
+  transform: scale(1.25);
+  box-shadow: 0 0 8px rgba(255, 255, 255, 0.8);
+}
+
+.size-btn {
+  background: transparent;
+  border: 1px solid var(--border-color);
+  border-radius: 4px;
+  color: var(--text-muted);
+  font-size: 11px;
+  padding: 2px 6px;
+  cursor: pointer;
+  transition: all 0.15s;
+}
+
+.size-btn:hover {
+  color: var(--text-main);
+  background: var(--bg-surface);
+}
+
+.size-btn.active {
+  color: #ffffff;
+  background: var(--accent-blue);
+  border-color: var(--accent-blue);
+}
+
+.annot-action-btn {
+  background: var(--bg-surface);
+  border: 1px solid var(--border-color);
+  color: var(--text-main);
+  border-radius: 4px;
+  font-size: 11.5px;
+  padding: 4px 8px;
+  cursor: pointer;
+  transition: all 0.15s;
+  white-space: nowrap;
+}
+
+.annot-action-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  border-color: var(--text-muted);
+}
+
+.annot-action-btn.btn-primary {
+  background: #1e3a8a;
+  border-color: var(--accent-blue);
+  color: #93c5fd;
+  font-weight: 600;
+}
+.annot-action-btn.btn-primary:hover {
+  background: var(--accent-blue);
+  color: #fff;
+}
+
+.annot-action-btn.btn-danger {
+  background: rgba(234, 67, 53, 0.15);
+  border-color: rgba(234, 67, 53, 0.4);
+  color: #f87171;
+}
+.annot-action-btn.btn-danger:hover {
+  background: #dc2626;
+  color: #fff;
+}
+
+/* Toast Message */
+.cockpit-toast {
+  position: absolute;
+  bottom: 20px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(15, 23, 42, 0.95);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  color: #f1f5f9;
+  border: 1px solid rgba(56, 189, 248, 0.4);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45), 0 0 10px rgba(56, 189, 248, 0.2);
+  padding: 6px 16px;
+  border-radius: 20px;
+  font-size: 12px;
+  z-index: 250;
+  pointer-events: none;
+  animation: toastFadeIn 0.2s ease;
+  white-space: nowrap;
+}
+
+@keyframes toastFadeIn {
+  from { opacity: 0; transform: translate(-50%, 8px); }
+  to { opacity: 1; transform: translate(-50%, 0); }
+}
+
+/* Ask Agent Popover */
+.annot-send-popover {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0, 0, 0, 0.65);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+  align-items: center;
+  justify-content: center;
+  z-index: 300;
+  animation: toastFadeIn 0.15s ease;
+}
+.annot-send-popover:not([hidden]) {
+  display: flex;
+}
+
+.annot-send-popover .popover-content {
+  background: var(--bg-card);
+  border: 1px solid var(--border-color);
+  box-shadow: 0 16px 40px rgba(0, 0, 0, 0.7);
+  border-radius: 10px;
+  width: 90%;
+  max-width: 440px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.annot-send-popover .popover-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-weight: 600;
+  font-size: 13px;
+  color: var(--text-main);
+}
+
+.annot-send-popover .popover-close-btn {
+  background: transparent;
+  border: none;
+  color: var(--text-muted);
+  font-size: 18px;
+  cursor: pointer;
+  padding: 0 4px;
+}
+.annot-send-popover .popover-close-btn:hover {
+  color: var(--text-main);
+}
+
+.annot-send-popover textarea {
+  background: var(--bg-base);
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  color: var(--text-main);
+  padding: 8px 10px;
+  font-family: inherit;
+  font-size: 12px;
+  resize: vertical;
+  outline: none;
+}
+.annot-send-popover textarea:focus {
+  border-color: var(--accent-blue);
+  box-shadow: 0 0 0 1px var(--accent-blue);
+}
+
+.annot-send-popover .popover-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+

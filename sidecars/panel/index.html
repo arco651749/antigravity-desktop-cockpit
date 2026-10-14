@@ -53,6 +53,10 @@
         </select>
         <button id="btnEngineRestart" title="重啟底層串流引擎">⚡ 重啟</button>
       </div>
+
+      <div class="tool-group">
+        <button id="btnAnnotateToggle" class="btn-annotate" title="定格畫面並開啟畫筆標註 (快速鍵: Ctrl+Shift+A)">📸 截圖標註</button>
+      </div>
     </div>
 
     <!-- Arbiter Status Banner -->
@@ -71,14 +75,63 @@
 
     <!-- Streaming Canvas Viewport -->
     <div class="viewport-wrapper" id="viewport" tabindex="0">
-      <canvas id="streamCanvas"></canvas>
+      <div class="canvas-stage" id="canvasStage">
+        <canvas id="streamCanvas"></canvas>
+        <canvas id="annotationCanvas" class="annotation-canvas" hidden></canvas>
+      </div>
     </div>
 
-    <!-- Live Event Console -->
+    <!-- Live Event Console (Default) -->
     <div class="console-pane" id="consoleLogs">
       <div class="log-entry">
         <span class="log-time">[系統]</span>
         <span class="log-sys">Antigravity Desktop Cockpit 駕駛艙初始化中...</span>
+      </div>
+    </div>
+
+    <!-- Bottom Docked Annotation Toolbar (Replaces logs during screenshot annotation) -->
+    <div id="annotToolbar" class="cockpit-annot-dock" hidden>
+      <div class="annot-tool-group">
+        <button class="annot-btn active" data-tool="pen" title="畫筆 (Freehand)">✏️ 畫筆</button>
+        <button class="annot-btn" data-tool="rect" title="框選 (Box)">🔲 框選</button>
+        <button class="annot-btn" data-tool="arrow" title="箭頭 (Arrow)">➡️ 箭頭</button>
+      </div>
+      <div class="annot-divider"></div>
+      <div class="annot-color-group">
+        <span class="color-dot active" data-color="#ef4444" style="background:#ef4444;" title="紅色"></span>
+        <span class="color-dot" data-color="#eab308" style="background:#eab308;" title="黃色"></span>
+        <span class="color-dot" data-color="#22c55e" style="background:#22c55e;" title="綠色"></span>
+        <span class="color-dot" data-color="#3b82f6" style="background:#3b82f6;" title="藍色"></span>
+        <span class="color-dot" data-color="#ffffff" style="background:#ffffff;" title="白色"></span>
+      </div>
+      <div class="annot-divider"></div>
+      <div class="annot-size-group">
+        <button class="size-btn" data-size="2">細</button>
+        <button class="size-btn active" data-size="4">中</button>
+        <button class="size-btn" data-size="8">粗</button>
+      </div>
+      <div class="annot-divider"></div>
+      <div class="annot-action-group">
+        <button class="annot-action-btn" id="btnAnnotUndo" title="復原上一筆 (Ctrl+Z)">↩️ 復原</button>
+        <button class="annot-action-btn" id="btnAnnotClear" title="清空所有標註">🗑️ 清空</button>
+        <button class="annot-action-btn" id="btnAnnotCopy" title="複製標註圖片到剪貼簿，可在對話輸入框按 Ctrl+V 貼上">📋 Ctrl + C, V</button>
+        <button class="annot-action-btn btn-primary" id="btnAnnotSend" title="提問 Agent (包含標註圖片)">💬 Ask</button>
+        <button class="annot-action-btn btn-danger" id="btnAnnotClose" title="離開標註模式並恢復即時串流 (Esc)">✕ 關閉</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Ask Agent Popover Modal -->
+  <div id="annotSendPopover" class="annot-send-popover" hidden>
+    <div class="popover-content">
+      <div class="popover-header">
+        <span id="popoverTitle">💬 提問 Agent (標註圖片)</span>
+        <button id="popoverClose" class="popover-close-btn">&times;</button>
+      </div>
+      <textarea id="popoverInput" rows="3" placeholder="請輸入想對 AI Agent 說的話（按 Enter 直接發送，Shift+Enter 換行）..."></textarea>
+      <div class="popover-actions">
+        <button id="popoverCancelBtn" class="btn btn-secondary">取消</button>
+        <button id="popoverSubmitBtn" class="btn btn-primary">送出 (Enter)</button>
       </div>
     </div>
   </div>
