@@ -332,6 +332,7 @@ def main():
     p_mouse.add_argument("u", type=float, help="歸一化 X 座標 (0.0~1.0)")
     p_mouse.add_argument("v", type=float, help="歸一化 Y 座標 (0.0~1.0)")
     p_mouse.add_argument("-b", "--button", default="left", choices=["left", "middle", "right"], help="按鍵")
+    p_mouse.add_argument("--hwnd", help="可選特定目標視窗 HWND")
 
     # open-url
     p_url = subparsers.add_parser("open-url", help="在瀏覽器視窗中導航至指定網址 (自動 Ctrl+L -> 輸入網址 -> Enter)")
@@ -452,6 +453,11 @@ def main():
         async def exec_mouse():
             import websockets
             async with websockets.connect(WS_URL) as ws:
+                if args.hwnd:
+                    h = parse_hwnd(args.hwnd)
+                    await ws.send(json.dumps({"action": "set_window", "hwnd": h}))
+                    await asyncio.sleep(0.1)
+
                 if sub == "click":
                     await ws.send(json.dumps({
                         "action": "mouse", "source": "agent", "mode": "direct", "subaction": "down",
