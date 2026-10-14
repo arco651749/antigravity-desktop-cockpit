@@ -340,8 +340,10 @@ def main():
 
     # uia
     p_uia = subparsers.add_parser("uia", help="取得目標視窗之 UIA 語意樹")
-    p_uia.add_argument("-d", "--depth", type=int, default=4, help="遍歷深度")
+    p_uia.add_argument("-d", "--depth", type=int, default=8, help="遍歷深度 (預設 8)")
     p_uia.add_argument("--hwnd", help="可選視窗 HWND")
+    p_uia.add_argument("-f", "--find", help="搜尋特定名稱、控制項類型或 ID 之節點")
+    p_uia.add_argument("-s", "--summary", action="store_true", help="輸出精簡概覽與統計資訊")
 
     # diff
     p_diff = subparsers.add_parser("diff", help="比對 Visual Memory 快照差異")
@@ -434,25 +436,38 @@ def main():
 
     elif args.command == "mouse":
         sub = args.subaction
+        u_val = args.u
+        v_val = args.v
+        if u_val > 1.0 or v_val > 1.0:
+            mons = list_system_monitors()
+            vm = next((m for m in mons if not m["primary"]), None)
+            if vm and vm["width"] > 0 and vm["height"] > 0:
+                orig_u, orig_v = u_val, v_val
+                u_val = round((u_val - vm["x"]) / vm["width"], 4)
+                v_val = round((v_val - vm["y"]) / vm["height"], 4)
+                u_val = max(0.0, min(1.0, u_val))
+                v_val = max(0.0, min(1.0, v_val))
+                print(f"[MOUSE] 絕對座標 ({orig_u}, {orig_v}) 已自動轉換為虛擬螢幕歸一化座標 ({u_val}, {v_val})")
+
         async def exec_mouse():
             import websockets
             async with websockets.connect(WS_URL) as ws:
                 if sub == "click":
                     await ws.send(json.dumps({
                         "action": "mouse", "source": "agent", "mode": "direct", "subaction": "down",
-                        "button": args.button, "u": args.u, "v": args.v, "delta": 0
+                        "button": args.button, "u": u_val, "v": v_val, "delta": 0
                     }))
                     await asyncio.sleep(0.05)
                     await ws.send(json.dumps({
                         "action": "mouse", "source": "agent", "mode": "direct", "subaction": "up",
-                        "button": args.button, "u": args.u, "v": args.v, "delta": 0
+                        "button": args.button, "u": u_val, "v": v_val, "delta": 0
                     }))
                 else:
                     await ws.send(json.dumps({
                         "action": "mouse", "source": "agent", "mode": "direct", "subaction": sub,
-                        "button": args.button, "u": args.u, "v": args.v, "delta": 0
+                        "button": args.button, "u": u_val, "v": v_val, "delta": 0
                     }))
-                print(f"[MOUSE] 已執行滑鼠 {sub} 於 ({args.u}, {args.v}) [{args.button}]")
+                print(f"[MOUSE] 已執行滑鼠 {sub} 於 ({u_val}, {v_val}) [{args.button}]")
         asyncio.run(exec_mouse())
 
     elif args.command == "open-url":
@@ -502,7 +517,74 @@ def main():
         if args.hwnd:
             cmd["hwnd"] = parse_hwnd(args.hwnd)
         res = asyncio.run(send_cmd(cmd, wait_for_event="uia_tree"))
-        print(json.dumps(res, ensure_ascii=False, indent=2))
+        tree = res.get("data", {}) if isinstance(res, dict) else {}
+
+        mons = list_system_monitors()
+        vm = next((m for m in mons if not m["primary"]), None)
+
+        def calc_uv(cx, cy):
+            if vm and vm["width"] > 0 and vm["height"] > 0:
+                u = round((cx - vm["x"]) / vm["width"], 4)
+                v = round((cy - vm["y"]) / vm["height"], 4)
+                return u, v
+            return None, None
+
+        if args.find or args.summary:
+            all_nodes = []
+            matches = []
+
+            def walk(node, depth=0):
+                name = node.get("name", "").strip()
+                ctype = node.get("control_type", "")
+                rect = node.get("bounding_rect", [0, 0, 0, 0])
+                center = node.get("center_point", [0, 0])
+                cid = node.get("id", "")
+
+                has_size = rect and len(rect) == 4 and rect[2] > 0 and rect[3] > 0
+                if name or has_size:
+                    u, v = calc_uv(center[0], center[1]) if center and len(center) == 2 else (None, None)
+                    item = {
+                        "depth": depth, "type": ctype, "name": name,
+                        "rect": rect, "center": center, "id": cid,
+                        "u": u, "v": v
+                    }
+                    all_nodes.append(item)
+
+                    if args.find:
+                        kw = args.find.lower()
+                        if kw in name.lower() or kw in ctype.lower() or kw in cid.lower():
+                            matches.append(item)
+
+                for child in node.get("children", []):
+                    walk(child, depth + 1)
+
+            walk(tree)
+
+            if args.find:
+                print(f"[UIA-FIND] 關鍵字 '{args.find}' 搜尋結果 (共 {len(matches)} 筆匹配):")
+                print("-" * 115)
+                print(f"{'深度':<4} | {'類型':<12} | {'中心點 (X, Y)':<15} | {'歸一化 (u, v)':<17} | {'名稱 / 標籤'}")
+                print("-" * 115)
+                for item in matches:
+                    cent_str = f"({item['center'][0]},{item['center'][1]})" if item['center'] else "-"
+                    uv_str = f"({item['u']}, {item['v']})" if item['u'] is not None else "-"
+                    name_display = item['name'][:55] if item['name'] else f"[ID: {item['id']}]"
+                    print(f"{item['depth']:<4} | {item['type']:<12} | {cent_str:<15} | {uv_str:<17} | {name_display}")
+                print("-" * 115)
+                if matches and matches[0]['u'] is not None:
+                    m0 = matches[0]
+                    print(f"💡 快速點擊提示: python.exe cockpit_cli.py mouse click {m0['u']} {m0['v']}")
+            elif args.summary:
+                from collections import Counter
+                ctls = Counter(n["type"] for n in all_nodes)
+                print(f"[UIA-SUMMARY] 節點總數: {len(all_nodes)}")
+                print("控制項類型分布:")
+                for ctl, count in ctls.most_common(12):
+                    print(f"  - {ctl:<16}: {count}")
+                named = [n for n in all_nodes if n["name"]]
+                print(f"具備文字語意名稱節點數: {len(named)}")
+        else:
+            print(json.dumps(res, ensure_ascii=False, indent=2))
 
     elif args.command == "diff":
         res = asyncio.run(send_cmd({"action": "get_visual_diff"}, wait_for_event="visual_diff"))
