@@ -31,8 +31,6 @@ AI Agent 或外部程式可直接透過本機 WebSocket 連線至串流引擎發
 | `get_uia_tree` | 提取視窗 UIA 語意控制項樹 | `{ "action": "get_uia_tree", "hwnd": 132924, "depth": 8 }` |
 | `get_visual_diff` | Visual Memory 比對快照差異 | `{ "action": "get_visual_diff" }` |
 
-完整參數規格請參閱：[`API_REFERENCE.md`](../../API_REFERENCE.md)
-
 ---
 
 ## 2. CLI 命令列快捷操作 (`cockpit_cli.py`)
