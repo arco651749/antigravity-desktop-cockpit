@@ -221,6 +221,47 @@ VK_MAP = {
     "pagedown": 34,
 }
 
+def set_clipboard_text(text: str) -> bool:
+    user32 = ctypes.windll.user32
+    kernel32 = ctypes.windll.kernel32
+    user32.OpenClipboard.argtypes = [wintypes.HWND]
+    user32.OpenClipboard.restype = wintypes.BOOL
+    user32.CloseClipboard.restype = wintypes.BOOL
+    user32.EmptyClipboard.restype = wintypes.BOOL
+    user32.SetClipboardData.argtypes = [wintypes.UINT, wintypes.HANDLE]
+    user32.SetClipboardData.restype = wintypes.HANDLE
+    kernel32.GlobalAlloc.argtypes = [wintypes.UINT, ctypes.c_size_t]
+    kernel32.GlobalAlloc.restype = wintypes.HGLOBAL
+    kernel32.GlobalLock.argtypes = [wintypes.HGLOBAL]
+    kernel32.GlobalLock.restype = ctypes.c_void_p
+    kernel32.GlobalUnlock.argtypes = [wintypes.HGLOBAL]
+    kernel32.GlobalUnlock.restype = wintypes.BOOL
+
+    CF_UNICODETEXT = 13
+    GMEM_MOVEABLE = 0x0002
+    for _ in range(5):
+        if user32.OpenClipboard(None):
+            break
+        time.sleep(0.04)
+    else:
+        return False
+    try:
+        user32.EmptyClipboard()
+        encoded = (text + '\0').encode('utf-16le')
+        h_mem = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(encoded))
+        if not h_mem:
+            return False
+        ptr = kernel32.GlobalLock(h_mem)
+        if not ptr:
+            return False
+        ctypes.memmove(ptr, encoded, len(encoded))
+        kernel32.GlobalUnlock(h_mem)
+        if not user32.SetClipboardData(CF_UNICODETEXT, h_mem):
+            return False
+        return True
+    finally:
+        user32.CloseClipboard()
+
 def parse_hwnd(val):
     if val is None:
         return None
@@ -409,17 +450,37 @@ def main():
         async def exec_hotkey():
             import websockets
             async with websockets.connect(WS_URL) as ws:
-                # down
+                # 依序按下實體修飾鍵 (VK_CONTROL=17, VK_MENU=18, VK_SHIFT=16)
+                if ctrl:
+                    await ws.send(json.dumps({"action": "key", "source": "agent", "mode": "direct", "subaction": "down", "vk": 17}))
+                    await asyncio.sleep(0.02)
+                if alt:
+                    await ws.send(json.dumps({"action": "key", "source": "agent", "mode": "direct", "subaction": "down", "vk": 18}))
+                    await asyncio.sleep(0.02)
+                if shift:
+                    await ws.send(json.dumps({"action": "key", "source": "agent", "mode": "direct", "subaction": "down", "vk": 16}))
+                    await asyncio.sleep(0.02)
+
+                # 按下與釋放主按鍵
                 await ws.send(json.dumps({
                     "action": "key", "source": "agent", "mode": "direct", "subaction": "down",
                     "vk": vk, "char": char, "ctrl": ctrl, "alt": alt, "shift": shift
                 }))
-                await asyncio.sleep(0.08)
-                # up
+                await asyncio.sleep(0.06)
                 await ws.send(json.dumps({
                     "action": "key", "source": "agent", "mode": "direct", "subaction": "up",
                     "vk": vk, "char": char, "ctrl": ctrl, "alt": alt, "shift": shift
                 }))
+                await asyncio.sleep(0.02)
+
+                # 依序釋放修飾鍵
+                if shift:
+                    await ws.send(json.dumps({"action": "key", "source": "agent", "mode": "direct", "subaction": "up", "vk": 16}))
+                if alt:
+                    await ws.send(json.dumps({"action": "key", "source": "agent", "mode": "direct", "subaction": "up", "vk": 18}))
+                if ctrl:
+                    await ws.send(json.dumps({"action": "key", "source": "agent", "mode": "direct", "subaction": "up", "vk": 17}))
+
                 res = await ws.recv()
                 while isinstance(res, bytes):
                     res = await ws.recv()
@@ -480,40 +541,40 @@ def main():
         async def exec_open_url():
             import websockets
             async with websockets.connect(WS_URL) as ws:
-                if args.hwnd:
-                    h = parse_hwnd(args.hwnd)
+                h = parse_hwnd(args.hwnd) if args.hwnd else None
+                if h:
                     await ws.send(json.dumps({"action": "set_window", "hwnd": h}))
-                    await asyncio.sleep(0.4)
+                    await asyncio.sleep(0.3)
 
                 # 1. 聚焦網址列 (Ctrl+L)
                 print("[OPEN-URL] 正在聚焦網址列 (Ctrl+L)...")
-                await ws.send(json.dumps({
-                    "action": "key", "source": "agent", "mode": "direct", "subaction": "down",
-                    "vk": 76, "char": None, "ctrl": True, "alt": False, "shift": False
-                }))
+                await ws.send(json.dumps({"action": "key", "source": "agent", "mode": "direct", "subaction": "down", "vk": 17}))
+                await asyncio.sleep(0.04)
+                await ws.send(json.dumps({"action": "key", "source": "agent", "mode": "direct", "subaction": "down", "vk": 76}))
                 await asyncio.sleep(0.05)
-                await ws.send(json.dumps({
-                    "action": "key", "source": "agent", "mode": "direct", "subaction": "up",
-                    "vk": 76, "char": None, "ctrl": True, "alt": False, "shift": False
-                }))
-                await asyncio.sleep(0.3)
+                await ws.send(json.dumps({"action": "key", "source": "agent", "mode": "direct", "subaction": "up", "vk": 76}))
+                await asyncio.sleep(0.04)
+                await ws.send(json.dumps({"action": "key", "source": "agent", "mode": "direct", "subaction": "up", "vk": 17}))
+                await asyncio.sleep(0.25)
 
-                # 2. 注入網址
-                print(f"[OPEN-URL] 正在注入目標網址: {args.url}...")
-                await ws.send(json.dumps({"action": "type_text", "text": args.url}))
-                await asyncio.sleep(0.4)
+                # 2. 注入網址 (Windows 原生剪貼簿 + Ctrl+V 即時貼入，0 延遲且無字元上限)
+                print(f"[OPEN-URL] 正在貼入目標網址 ({len(args.url)} 字元): {args.url}...")
+                set_clipboard_text(args.url)
+                await ws.send(json.dumps({"action": "key", "source": "agent", "mode": "direct", "subaction": "down", "vk": 17}))
+                await asyncio.sleep(0.04)
+                await ws.send(json.dumps({"action": "key", "source": "agent", "mode": "direct", "subaction": "down", "vk": 86}))
+                await asyncio.sleep(0.05)
+                await ws.send(json.dumps({"action": "key", "source": "agent", "mode": "direct", "subaction": "up", "vk": 86}))
+                await asyncio.sleep(0.04)
+                await ws.send(json.dumps({"action": "key", "source": "agent", "mode": "direct", "subaction": "up", "vk": 17}))
+                await asyncio.sleep(0.25)
 
-                # 3. 按下 Enter
+                # 3. 按下 Enter 進行導航 (VK_RETURN 13)
                 print("[OPEN-URL] 正在送出 Enter 進行導航...")
-                await ws.send(json.dumps({
-                    "action": "key", "source": "agent", "mode": "direct", "subaction": "down",
-                    "vk": 13, "char": None, "ctrl": False, "alt": False, "shift": False
-                }))
+                await ws.send(json.dumps({"action": "key", "source": "agent", "mode": "direct", "subaction": "down", "vk": 13}))
                 await asyncio.sleep(0.05)
-                await ws.send(json.dumps({
-                    "action": "key", "source": "agent", "mode": "direct", "subaction": "up",
-                    "vk": 13, "char": None, "ctrl": False, "alt": False, "shift": False
-                }))
+                await ws.send(json.dumps({"action": "key", "source": "agent", "mode": "direct", "subaction": "up", "vk": 13}))
+                await asyncio.sleep(0.5)
                 print("[OPEN-URL] 導航指令已全數成功發送！")
 
         asyncio.run(exec_open_url())
