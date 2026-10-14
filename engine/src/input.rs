@@ -5,10 +5,11 @@ use windows::Win32::Foundation::{BOOL, HWND, LPARAM, POINT, RECT, WPARAM};
 use windows::Win32::System::StationsAndDesktops::{GetThreadDesktop, SetThreadDesktop};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, INPUT_MOUSE, KEYBDINPUT,
-    KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_LEFTDOWN,
+    KEYEVENTF_KEYUP, KEYEVENTF_UNICODE, KEYEVENTF_EXTENDEDKEY,
+    MOUSEEVENTF_ABSOLUTE, MOUSEEVENTF_LEFTDOWN,
     MOUSEEVENTF_LEFTUP, MOUSEEVENTF_MIDDLEDOWN, MOUSEEVENTF_MIDDLEUP, MOUSEEVENTF_MOVE,
     MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP, MOUSEEVENTF_VIRTUALDESK, MOUSEEVENTF_WHEEL,
-    MOUSEINPUT, VIRTUAL_KEY,
+    MOUSEINPUT, VIRTUAL_KEY, MapVirtualKeyW, MAPVK_VK_TO_VSC, KEYBD_EVENT_FLAGS,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     GetSystemMetrics, GetWindowRect, GetWindowThreadProcessId, PostMessageW, SetForegroundWindow,
@@ -512,52 +513,47 @@ impl InputArbiter {
             let _ = SetForegroundWindow(hwnd);
             let is_up = action.eq_ignore_ascii_case("up");
 
+            // 仿 RustDesk 物理硬體掃描碼生成機制 (同時提供 wVk 與 OEM wScan，並自動判定擴充鍵標記)
+            let make_hardware_key = |vk: u16, up: bool| -> INPUT {
+                let scan = MapVirtualKeyW(vk as u32, MAPVK_VK_TO_VSC) as u16;
+                let is_extended = match vk {
+                    33..=46 | 91..=93 | 111 | 144 | 163 | 165 => true, // PageUp/Down, Home, End, Arrows, Delete, Win 等
+                    _ => (scan >> 8 == 0xE0 || scan >> 8 == 0xE1),
+                };
+                let mut flags = KEYBD_EVENT_FLAGS::default();
+                if is_extended {
+                    flags |= KEYEVENTF_EXTENDEDKEY;
+                }
+                if up {
+                    flags |= KEYEVENTF_KEYUP;
+                }
+                INPUT {
+                    r#type: INPUT_KEYBOARD,
+                    Anonymous: INPUT_0 {
+                        ki: KEYBDINPUT {
+                            wVk: VIRTUAL_KEY(vk),
+                            wScan: scan,
+                            dwFlags: flags,
+                            time: 0,
+                            dwExtraInfo: 0,
+                        },
+                    },
+                }
+            };
+
             let mut inputs = Vec::new();
 
             // 若非單獨按下修飾鍵本體，但在按下主鍵時檢測到組合鍵狀態，先確保修飾鍵在 Windows 佇列中處於按下狀態
             if !is_up {
                 if ctrl && vk_code != 17 {
-                    inputs.push(INPUT {
-                        r#type: INPUT_KEYBOARD,
-                        Anonymous: INPUT_0 {
-                            ki: KEYBDINPUT {
-                                wVk: VIRTUAL_KEY(0x11), // VK_CONTROL
-                                wScan: 0,
-                                dwFlags: Default::default(),
-                                time: 0,
-                                dwExtraInfo: 0,
-                            },
-                        },
-                    });
+                    inputs.push(make_hardware_key(0x11, false)); // VK_CONTROL
                 }
                 if alt && vk_code != 18 {
-                    inputs.push(INPUT {
-                        r#type: INPUT_KEYBOARD,
-                        Anonymous: INPUT_0 {
-                            ki: KEYBDINPUT {
-                                wVk: VIRTUAL_KEY(0x12), // VK_MENU (Alt)
-                                wScan: 0,
-                                dwFlags: Default::default(),
-                                time: 0,
-                                dwExtraInfo: 0,
-                            },
-                        },
-                    });
+                    inputs.push(make_hardware_key(0x12, false)); // VK_MENU (Alt)
                 }
                 // 注意：若已有直接的 unicode_char (如 'A', '!'), 無需額外壓住 Shift，避免 Windows 產生二次修飾
                 if shift && vk_code != 16 && unicode_char.is_none() {
-                    inputs.push(INPUT {
-                        r#type: INPUT_KEYBOARD,
-                        Anonymous: INPUT_0 {
-                            ki: KEYBDINPUT {
-                                wVk: VIRTUAL_KEY(0x10), // VK_SHIFT
-                                wScan: 0,
-                                dwFlags: Default::default(),
-                                time: 0,
-                                dwExtraInfo: 0,
-                            },
-                        },
-                    });
+                    inputs.push(make_hardware_key(0x10, false)); // VK_SHIFT
                 }
             }
 
@@ -575,63 +571,19 @@ impl InputArbiter {
                     },
                 });
             } else {
-                inputs.push(INPUT {
-                    r#type: INPUT_KEYBOARD,
-                    Anonymous: INPUT_0 {
-                        ki: KEYBDINPUT {
-                            wVk: VIRTUAL_KEY(vk_code),
-                            wScan: 0,
-                            dwFlags: if is_up { KEYEVENTF_KEYUP } else { Default::default() },
-                            time: 0,
-                            dwExtraInfo: 0,
-                        },
-                    },
-                });
+                inputs.push(make_hardware_key(vk_code, is_up));
             }
 
             // 釋放主要按鍵時，一併釋放對應的合成修飾鍵狀態，防呆避免卡鍵
             if is_up {
                 if ctrl && vk_code != 17 {
-                    inputs.push(INPUT {
-                        r#type: INPUT_KEYBOARD,
-                        Anonymous: INPUT_0 {
-                            ki: KEYBDINPUT {
-                                wVk: VIRTUAL_KEY(0x11), // VK_CONTROL
-                                wScan: 0,
-                                dwFlags: KEYEVENTF_KEYUP,
-                                time: 0,
-                                dwExtraInfo: 0,
-                            },
-                        },
-                    });
+                    inputs.push(make_hardware_key(0x11, true)); // VK_CONTROL
                 }
                 if alt && vk_code != 18 {
-                    inputs.push(INPUT {
-                        r#type: INPUT_KEYBOARD,
-                        Anonymous: INPUT_0 {
-                            ki: KEYBDINPUT {
-                                wVk: VIRTUAL_KEY(0x12), // VK_MENU
-                                wScan: 0,
-                                dwFlags: KEYEVENTF_KEYUP,
-                                time: 0,
-                                dwExtraInfo: 0,
-                            },
-                        },
-                    });
+                    inputs.push(make_hardware_key(0x12, true)); // VK_MENU (Alt)
                 }
                 if shift && vk_code != 16 && unicode_char.is_none() {
-                    inputs.push(INPUT {
-                        r#type: INPUT_KEYBOARD,
-                        Anonymous: INPUT_0 {
-                            ki: KEYBDINPUT {
-                                wVk: VIRTUAL_KEY(0x10), // VK_SHIFT
-                                wScan: 0,
-                                dwFlags: KEYEVENTF_KEYUP,
-                                time: 0,
-                                dwExtraInfo: 0,
-                            },
-                        },
-                    });
+                    inputs.push(make_hardware_key(0x10, true)); // VK_SHIFT
                 }
             }
 
