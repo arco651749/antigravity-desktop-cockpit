@@ -49,7 +49,7 @@ pub const PW_RENDERFULLCONTENT: u32 = 2;
 const DWMWA_CLOAKED: u32 = 14;
 const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
 
-unsafe fn is_self_or_ide_window(hwnd: HWND) -> bool {
+pub(crate) unsafe fn is_self_or_ide_window(hwnd: HWND) -> bool {
     let mut pid: u32 = 0;
     windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId(hwnd, Some(&mut pid));
     if pid == 0 {
@@ -70,7 +70,28 @@ unsafe fn is_self_or_ide_window(hwnd: HWND) -> bool {
         return false;
     }
     let path = String::from_utf16_lossy(&buf[..size as usize]).to_ascii_lowercase();
-    path.ends_with("\\antigravity.exe") || path.ends_with("\\gui-stream-engine.exe")
+    path.ends_with("\\antigravity.exe") || path.ends_with("\\code.exe") || path.ends_with("\\gui-stream-engine.exe")
+}
+
+pub(crate) unsafe fn is_ide_window(hwnd: HWND) -> bool {
+    let mut pid: u32 = 0;
+    windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId(hwnd, Some(&mut pid));
+    if pid == 0 || pid == std::process::id() {
+        return false;
+    }
+    let h_proc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, BOOL(0), pid);
+    if h_proc == 0 {
+        return false;
+    }
+    let mut buf = [0u16; 512];
+    let mut size = buf.len() as u32;
+    let ok = QueryFullProcessImageNameW(h_proc, 0, buf.as_mut_ptr(), &mut size);
+    let _ = CloseHandle(h_proc);
+    if !ok.as_bool() || size == 0 {
+        return false;
+    }
+    let path = String::from_utf16_lossy(&buf[..size as usize]).to_ascii_lowercase();
+    path.ends_with("\\antigravity.exe") || path.ends_with("\\code.exe")
 }
 
 /// 確保當前執行緒已正確綁定至作用中互動桌面，並啟用 Per-Monitor V2 DPI 認知
@@ -619,14 +640,26 @@ impl WindowCapturer {
     pub fn is_window_on_virtual_display(hwnd_val: isize) -> bool {
         unsafe {
             let hwnd = HWND(hwnd_val as *mut _);
+            if windows::Win32::UI::WindowsAndMessaging::IsIconic(hwnd).as_bool() {
+                let mut wp = windows::Win32::UI::WindowsAndMessaging::WINDOWPLACEMENT::default();
+                wp.length = std::mem::size_of::<windows::Win32::UI::WindowsAndMessaging::WINDOWPLACEMENT>() as u32;
+                if windows::Win32::UI::WindowsAndMessaging::GetWindowPlacement(hwnd, &mut wp).is_ok() {
+                    let primary_w = windows::Win32::UI::WindowsAndMessaging::GetSystemMetrics(
+                        windows::Win32::UI::WindowsAndMessaging::SM_CXSCREEN,
+                    ).max(1280);
+                    let norm = wp.rcNormalPosition;
+                    let cx = (norm.left + norm.right) / 2;
+                    return cx >= primary_w || (cx < 0 && cx > -5000);
+                }
+            }
             let mut rect = RECT::default();
             if GetWindowRect(hwnd, &mut rect).is_ok() {
                 let primary_w = windows::Win32::UI::WindowsAndMessaging::GetSystemMetrics(
                     windows::Win32::UI::WindowsAndMessaging::SM_CXSCREEN,
                 ).max(1280);
-                // 只要視窗中心點或左緣超出主螢幕範圍（支援右側或左側延伸螢幕），即視為位於虛擬第二螢幕
+                // 只要視窗中心點或左緣超出主螢幕範圍（支援右側或左側延伸螢幕，排除最小化 -32000 異常值），即視為位於虛擬第二螢幕
                 let center_x = (rect.left + rect.right) / 2;
-                center_x >= primary_w || center_x < 0
+                center_x >= primary_w || (center_x < 0 && center_x > -5000)
             } else {
                 false
             }

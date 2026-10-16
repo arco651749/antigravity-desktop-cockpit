@@ -480,9 +480,13 @@ function getNormalizedCoords(e) {
 }
 
 let downCoords = { u: 0.5, v: 0.5 };
-let hasMovedDuringDrag = false;
+let downClientPos = { x: 0, y: 0 };
+let isPointerDown = false;
+let isDragging = false;
+let dragButton = 'left';
+let lastMoveTime = 0;
 
-viewport.addEventListener('mousedown', (e) => {
+viewport.addEventListener('pointerdown', (e) => {
   if (isAnnotating) return;
   e.preventDefault();
   viewport.focus();
@@ -495,8 +499,14 @@ viewport.addEventListener('mousedown', (e) => {
     return;
   }
 
-  isDragging = true;
-  hasMovedDuringDrag = false;
+  try {
+    viewport.setPointerCapture(e.pointerId);
+  } catch (_) {}
+
+  isPointerDown = true;
+  isDragging = false;
+  downClientPos = { x: e.clientX, y: e.clientY };
+
   const btnMap = ['left', 'middle', 'right'];
   dragButton = btnMap[e.button] || 'left';
 
@@ -505,84 +515,44 @@ viewport.addEventListener('mousedown', (e) => {
   const { u, v } = getNormalizedCoords(e);
   downCoords = { u, v };
 
-  // 立即將畫布上的虛擬 AI 游標移至點擊處，提供即時視覺回饋，同時實體滑鼠 100% 留在畫布原位
+  // 立即在畫布上渲染虛擬 AI 游標位置 (即時視覺反饋，實體滑鼠 100% 留在畫布原位)
   handleAiCursorEvent({ u, v, subaction: 'move', source: 'user' });
-
-  // 立即發送 down 事件到目標，無論是點擊還是拖曳，第一時間在目標位置壓下按鈕
-  if (ws && ws.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({
-      action: 'mouse',
-      source: 'user',
-      mode: getMode(),
-      subaction: 'down',
-      button: dragButton,
-      u, v, delta: 0
-    }));
-  }
 
   const btnLabels = { left: '左鍵點擊', middle: '中鍵 (Blender 旋轉)', right: '右鍵選單' };
   setHumanActive(btnLabels[dragButton]);
 });
 
-window.addEventListener('mouseup', (e) => {
-  if (isAnnotating) return;
-  if (isDragging) {
-    isDragging = false;
-    const { u, v } = getNormalizedCoords(e);
-    const mode = getMode();
-
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({
-        action: 'mouse',
-        source: 'user',
-        mode,
-        subaction: 'up',
-        button: dragButton,
-        u, v, delta: 0
-      }));
-      handleAiCursorEvent({ u, v, subaction: 'click', source: 'user', focus_restored: true });
-      log('人類操作', `釋放 ${dragButton} (${u.toFixed(3)}, ${v.toFixed(3)}) → 滑鼠與焦點已歸還主畫面`, 'user');
-    }
-    hasMovedDuringDrag = false;
-  }
-});
-
-window.addEventListener('blur', () => {
-  if (isDragging) {
-    isDragging = false;
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({
-        action: 'mouse',
-        source: 'user',
-        mode: getMode(),
-        subaction: 'up',
-        button: dragButton,
-        u: downCoords.u,
-        v: downCoords.v,
-        delta: 0
-      }));
-    }
-  }
-});
-
-viewport.addEventListener('mouseleave', () => {
-  if (isAnnotating) return;
-  if (!isDragging) {
-    viewport.blur();
-    if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({ action: 'restore_primary_focus' }));
-    }
-  }
-});
-
-viewport.addEventListener('mousemove', (e) => {
+viewport.addEventListener('pointermove', (e) => {
   if (isAnnotating) return;
   const { u, v } = getNormalizedCoords(e);
   updateHudStat(`(${u.toFixed(3)}, ${v.toFixed(3)})`);
 
-  if (isDragging) {
-    hasMovedDuringDrag = true;
+  if (!isPointerDown) return;
+
+  const dist = Math.hypot(e.clientX - downClientPos.x, e.clientY - downClientPos.y);
+
+  // 當移動距離超過 4 像素時，判定為有意圖的「拖曳 (Drag)」！
+  if (dist > 4) {
     const now = performance.now();
+
+    if (!isDragging) {
+      isDragging = true;
+      // 拖曳開始：第一時間發送 down 事件鎖定目標拖曳起點
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+          action: 'mouse',
+          source: 'user',
+          mode: getMode(),
+          subaction: 'down',
+          button: dragButton,
+          u: downCoords.u,
+          v: downCoords.v,
+          delta: 0
+        }));
+      }
+      setHumanActive(dragButton === 'middle' ? '中鍵 3D 視角旋轉' : '滑鼠拖曳中');
+    }
+
     if (now - lastMoveTime >= 16) {
       lastMoveTime = now;
       handleAiCursorEvent({ u, v, subaction: 'move', source: 'user' });
@@ -596,7 +566,86 @@ viewport.addEventListener('mousemove', (e) => {
           u, v, delta: 0
         }));
       }
-      setHumanActive(dragButton === 'middle' ? '中鍵 3D 視角旋轉' : '滑鼠拖曳中');
+    }
+  }
+});
+
+viewport.addEventListener('pointerup', (e) => {
+  if (isAnnotating) return;
+  if (!isPointerDown) return;
+  isPointerDown = false;
+
+  try {
+    viewport.releasePointerCapture(e.pointerId);
+  } catch (_) {}
+
+  const { u, v } = getNormalizedCoords(e);
+  const mode = getMode();
+
+  if (isDragging) {
+    // 拖曳結束：發送 up 釋放按鈕，引擎在 12ms 內歸還主畫面游標與焦點
+    isDragging = false;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({
+        action: 'mouse',
+        source: 'user',
+        mode,
+        subaction: 'up',
+        button: dragButton,
+        u, v, delta: 0
+      }));
+      handleAiCursorEvent({ u, v, subaction: 'click', source: 'user', focus_restored: true });
+      log('人類操作', `拖曳釋放 ${dragButton} (${u.toFixed(3)}, ${v.toFixed(3)}) → 滑鼠與焦點已歸還主畫面`, 'user');
+    }
+  } else {
+    // 純點擊 (未拖曳超過 4px)：發送原子化 click 指令！
+    // 引擎在 24ms 內瞬時完成 Move+Down+Up，並無縫歸還主畫面滑鼠與焦點，IDE 絕無 focus 丟失或畫面閃爍！
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({
+        action: 'mouse',
+        source: 'user',
+        mode,
+        subaction: 'click',
+        button: dragButton,
+        u: downCoords.u,
+        v: downCoords.v,
+        delta: 0
+      }));
+      handleAiCursorEvent({ u: downCoords.u, v: downCoords.v, subaction: 'click', source: 'user', focus_restored: true });
+      log('人類操作', `原子點擊 (${downCoords.u.toFixed(3)}, ${downCoords.v.toFixed(3)}) [${dragButton}] → 主畫面滑鼠 0 位移`, 'user');
+    }
+  }
+});
+
+viewport.addEventListener('pointercancel', (e) => {
+  if (isPointerDown) {
+    isPointerDown = false;
+    try {
+      viewport.releasePointerCapture(e.pointerId);
+    } catch (_) {}
+    if (isDragging) {
+      isDragging = false;
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({
+          action: 'mouse',
+          source: 'user',
+          mode: getMode(),
+          subaction: 'up',
+          button: dragButton,
+          u: downCoords.u,
+          v: downCoords.v,
+          delta: 0
+        }));
+      }
+    }
+  }
+});
+
+viewport.addEventListener('mouseleave', () => {
+  if (isAnnotating) return;
+  if (!isPointerDown && !isDragging) {
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ action: 'restore_primary_focus' }));
     }
   }
 });

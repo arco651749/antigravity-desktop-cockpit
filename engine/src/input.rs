@@ -167,22 +167,55 @@ impl InputArbiter {
         self.restore_primary_cursor_only();
 
         // 2. 歸還鍵盤焦點至主螢幕原本使用的視窗 (如 Antigravity IDE)
-        let saved_fg = self.saved_host_foreground.load(Ordering::SeqCst);
+        let mut saved_fg = self.saved_host_foreground.load(Ordering::SeqCst);
+        if saved_fg == 0 || saved_fg == target_hwnd.0 as isize || crate::capture::WindowCapturer::is_window_on_virtual_display(saved_fg) {
+            if let Some(ide_hwnd) = Self::find_ide_window() {
+                saved_fg = ide_hwnd.0 as isize;
+            }
+        }
+
         if saved_fg != 0 && saved_fg != target_hwnd.0 as isize {
             let fg_hwnd = HWND(saved_fg as *mut _);
             let cur_fg = GetForegroundWindow();
             if cur_fg != fg_hwnd {
-                let cur_tid = GetWindowThreadProcessId(cur_fg, None);
+                let my_tid = windows::Win32::System::Threading::GetCurrentThreadId();
+                let fg_tid = GetWindowThreadProcessId(cur_fg, None);
                 let dst_tid = GetWindowThreadProcessId(fg_hwnd, None);
-                if cur_tid != 0 && dst_tid != 0 && cur_tid != dst_tid {
-                    let _ = AttachThreadInput(cur_tid, dst_tid, BOOL(1));
-                    let _ = SetForegroundWindow(fg_hwnd);
-                    let _ = AttachThreadInput(cur_tid, dst_tid, BOOL(0));
-                } else {
-                    let _ = SetForegroundWindow(fg_hwnd);
+
+                if fg_tid != 0 && fg_tid != my_tid {
+                    let _ = AttachThreadInput(my_tid, fg_tid, BOOL(1));
+                }
+                if dst_tid != 0 && dst_tid != my_tid {
+                    let _ = AttachThreadInput(my_tid, dst_tid, BOOL(1));
+                }
+
+                let _ = SetForegroundWindow(fg_hwnd);
+
+                if dst_tid != 0 && dst_tid != my_tid {
+                    let _ = AttachThreadInput(my_tid, dst_tid, BOOL(0));
+                }
+                if fg_tid != 0 && fg_tid != my_tid {
+                    let _ = AttachThreadInput(my_tid, fg_tid, BOOL(0));
                 }
             }
         }
+    }
+
+    unsafe fn find_ide_window() -> Option<HWND> {
+        let mut result: Option<HWND> = None;
+        let ptr = &mut result as *mut Option<HWND> as isize;
+        unsafe extern "system" fn enum_ide_cb(h: HWND, lp: LPARAM) -> BOOL {
+            if windows::Win32::UI::WindowsAndMessaging::IsWindowVisible(h).as_bool() {
+                if crate::capture::is_ide_window(h) {
+                    let res_ref = &mut *(lp.0 as *mut Option<HWND>);
+                    *res_ref = Some(h);
+                    return BOOL(0);
+                }
+            }
+            BOOL(1)
+        }
+        let _ = windows::Win32::UI::WindowsAndMessaging::EnumWindows(Some(enum_ide_cb), LPARAM(ptr));
+        result
     }
 
     fn current_timestamp_ms() -> u64 {
@@ -497,30 +530,35 @@ impl InputArbiter {
 
         unsafe {
             let hwnd = HWND(hwnd_val as *mut _);
+            if windows::Win32::UI::WindowsAndMessaging::IsIconic(hwnd).as_bool() {
+                let _ = windows::Win32::UI::WindowsAndMessaging::ShowWindow(hwnd, windows::Win32::UI::WindowsAndMessaging::SW_RESTORE);
+                std::thread::sleep(Duration::from_millis(50));
+            }
             let mut r = RECT::default();
             if GetWindowRect(hwnd, &mut r).is_err() {
                 return Err("無法獲取視窗外框 RECT".into());
             }
 
             let is_on_virtual = crate::capture::WindowCapturer::is_window_on_virtual_display(hwnd_val);
-            let (screen_x, screen_y) = if is_on_virtual {
-                let virtual_mon = crate::monitor::MonitorManager::list_monitors()
-                    .into_iter()
-                    .find(|m| m.is_virtual_candidate);
-                if let Some(vm) = virtual_mon {
+            let virtual_mon = crate::monitor::MonitorManager::list_monitors()
+                .into_iter()
+                .find(|m| m.is_virtual_candidate);
+
+            let (screen_x, screen_y) = if let Some(vm) = virtual_mon {
+                if is_on_virtual || vm.x > 0 {
                     let sx = vm.x as f64 + (u.clamp(0.0, 1.0) * vm.width as f64);
                     let sy = vm.y as f64 + (v.clamp(0.0, 1.0) * vm.height as f64);
                     (sx.round() as i32, sy.round() as i32)
                 } else {
-                    let width = (r.right - r.left) as f64;
-                    let height = (r.bottom - r.top) as f64;
+                    let width = (r.right - r.left).max(1) as f64;
+                    let height = (r.bottom - r.top).max(1) as f64;
                     let sx = r.left as f64 + (u.clamp(0.0, 1.0) * width);
                     let sy = r.top as f64 + (v.clamp(0.0, 1.0) * height);
                     (sx.round() as i32, sy.round() as i32)
                 }
             } else {
-                let width = (r.right - r.left) as f64;
-                let height = (r.bottom - r.top) as f64;
+                let width = (r.right - r.left).max(1) as f64;
+                let height = (r.bottom - r.top).max(1) as f64;
                 let sx = r.left as f64 + (u.clamp(0.0, 1.0) * width);
                 let sy = r.top as f64 + (v.clamp(0.0, 1.0) * height);
                 (sx.round() as i32, sy.round() as i32)
@@ -534,12 +572,11 @@ impl InputArbiter {
             let norm_x = (((screen_x - vx) * 65535) / vw) as i32;
             let norm_y = (((screen_y - vy) * 65535) / vh) as i32;
 
-            // 動作開始前，安全快照主螢幕上的真實游標座標與原前景視窗 (絕不被虛擬螢幕座標覆蓋)
-            self.snapshot_primary_state(hwnd);
-
-            // 激活目標視窗並同步系統游標至目標點
-            let _ = SetForegroundWindow(hwnd);
-            let _ = SetCursorPos(screen_x, screen_y);
+            // 僅在點擊 (click) 或按壓開始 (down) 時快照主螢幕游標與原焦點，拖曳移動 (move) 與釋放 (up) 絕不重複調用或覆蓋！
+            if action == "click" || action == "down" {
+                self.snapshot_primary_state(hwnd);
+                let _ = SetForegroundWindow(hwnd);
+            }
 
             let (dw_down, dw_up) = match button {
                 "right" => (MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP),
@@ -570,7 +607,7 @@ impl InputArbiter {
                                 dx: norm_x,
                                 dy: norm_y,
                                 mouseData: 0,
-                                dwFlags: dw_down,
+                                dwFlags: dw_down | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK,
                                 time: 0,
                                 dwExtraInfo: 0,
                             },
@@ -628,7 +665,7 @@ impl InputArbiter {
                                 dx: norm_x,
                                 dy: norm_y,
                                 mouseData: 0,
-                                dwFlags: dw_down,
+                                dwFlags: dw_down | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK,
                                 time: 0,
                                 dwExtraInfo: 0,
                             },
