@@ -74,7 +74,13 @@ function log(sender, text, type = 'sys') {
   let cls = 'log-sys';
   if (type === 'user') cls = 'log-user';
   if (type === 'agent') cls = 'log-agent';
-  div.innerHTML = `<span class="log-time">${time}</span><span class="${cls}">[${sender}] ${text}</span>`;
+  const timeSpan = document.createElement('span');
+  timeSpan.className = 'log-time';
+  timeSpan.textContent = time;
+  const msgSpan = document.createElement('span');
+  msgSpan.className = cls;
+  msgSpan.textContent = `[${sender}] ${text}`;
+  div.append(timeSpan, msgSpan);
   consoleLogs.appendChild(div);
   consoleLogs.scrollTop = consoleLogs.scrollHeight;
 }
@@ -84,6 +90,7 @@ function setHumanActive(desc) {
   arbiterText.textContent = `👨‍💻 人類操作 (${desc})`;
   clearTimeout(humanTimeout);
   humanTimeout = setTimeout(() => {
+    humanTimeout = null;
     arbiterStatus.className = 'status-pill status-guard';
     arbiterText.textContent = '🛡️ 主畫面焦點保護中';
   }, 1500);
@@ -104,8 +111,10 @@ function handleAiCursorEvent(data) {
   updateHudStat(uvStr);
 
   if (sub === 'move') {
-    arbiterStatus.className = 'status-pill status-ai';
-    arbiterText.textContent = '🤖 AI 執行中 (焦點鎖定)';
+    if (data.source !== 'user') {
+      arbiterStatus.className = 'status-pill status-ai';
+      arbiterText.textContent = '🤖 AI 執行中 (焦點鎖定)';
+    }
   } else if (sub === 'click' || sub === 'down') {
     if (aiVirtualCursor) {
       aiVirtualCursor.classList.add('clicking');
@@ -117,9 +126,11 @@ function handleAiCursorEvent(data) {
       aiCursorRippleHost.appendChild(ring);
       setTimeout(() => ring.remove(), 580);
     }
-    arbiterStatus.className = 'status-pill status-guard';
-    arbiterText.textContent = '🛡️ 點擊完成 (焦點已歸還)';
-    log('AI 點擊', `⚡ 原子點擊 ${uvStr} 完成 → 焦點已無縫歸還主畫面`, 'agent');
+    if (data.source !== 'user') {
+      arbiterStatus.className = 'status-pill status-guard';
+      arbiterText.textContent = '🛡️ 點擊完成 (焦點已歸還)';
+      log('AI 點擊', `⚡ 原子點擊 ${uvStr} 完成 → 焦點已無縫歸還主畫面`, 'agent');
+    }
   } else if (sub === 'type') {
     const preview = data.text_preview || '';
     arbiterStatus.className = 'status-pill status-guard';
@@ -132,6 +143,7 @@ function handleAiCursorEvent(data) {
 
   clearTimeout(aiBadgeTimer);
   aiBadgeTimer = setTimeout(() => {
+    aiBadgeTimer = null;
     if (!humanTimeout) {
       arbiterStatus.className = 'status-pill status-guard';
       arbiterText.textContent = '🛡️ 主畫面焦點保護中';
@@ -426,7 +438,7 @@ if (modeSelect) {
 if (modeSelect) {
   modeSelect.addEventListener('change', () => {
     localStorage.setItem('desktop_cockpit_input_mode', modeSelect.value);
-    const modeName = modeSelect.value === 'direct' ? '⚡ 直通 + 焦點自動歸還' : '🌿 純背景模式 (PostMessage)';
+    const modeName = modeSelect.value === 'direct' ? '⚡ 直通模式' : '🌿 純背景模式 (PostMessage)';
     log('模式切換', `切換為 ${modeName}`, 'sys');
     updateHudStat();
     if (ws && ws.readyState === WebSocket.OPEN) {
@@ -580,7 +592,7 @@ viewport.addEventListener('pointerup', (e) => {
   const mode = getMode();
 
   if (isDragging) {
-    // 拖曳結束：發送 up 釋放按鈕，引擎在 12ms 內歸還主畫面游標與焦點
+    // 拖曳結束：發送 up 釋放按鈕
     isDragging = false;
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({
@@ -591,12 +603,12 @@ viewport.addEventListener('pointerup', (e) => {
         button: dragButton,
         u, v, delta: 0
       }));
-      handleAiCursorEvent({ u, v, subaction: 'click', source: 'user', focus_restored: true });
-      log('人類操作', `拖曳釋放 ${dragButton} (${u.toFixed(3)}, ${v.toFixed(3)}) → 滑鼠與焦點已歸還主畫面`, 'user');
+      handleAiCursorEvent({ u, v, subaction: 'click', source: 'user', focus_restored: mode !== 'direct' });
+      const isDir = mode === 'direct';
+      log('人類操作', `拖曳釋放 ${dragButton} (${u.toFixed(3)}, ${v.toFixed(3)}) ${isDir ? '→ 游標停留在第二螢幕' : '→ 滑鼠與焦點已歸還主畫面'}`, 'user');
     }
   } else {
     // 純點擊 (未拖曳超過 4px)：發送原子化 click 指令！
-    // 引擎在 24ms 內瞬時完成 Move+Down+Up，並無縫歸還主畫面滑鼠與焦點，IDE 絕無 focus 丟失或畫面閃爍！
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({
         action: 'mouse',
@@ -608,8 +620,9 @@ viewport.addEventListener('pointerup', (e) => {
         v: downCoords.v,
         delta: 0
       }));
-      handleAiCursorEvent({ u: downCoords.u, v: downCoords.v, subaction: 'click', source: 'user', focus_restored: true });
-      log('人類操作', `原子點擊 (${downCoords.u.toFixed(3)}, ${downCoords.v.toFixed(3)}) [${dragButton}] → 主畫面滑鼠 0 位移`, 'user');
+      handleAiCursorEvent({ u: downCoords.u, v: downCoords.v, subaction: 'click', source: 'user', focus_restored: mode !== 'direct' });
+      const isDir = mode === 'direct';
+      log('人類操作', `點擊 (${downCoords.u.toFixed(3)}, ${downCoords.v.toFixed(3)}) [${dragButton}] ${isDir ? '→ 游標已送至第二螢幕' : '→ 主畫面滑鼠 0 位移'}`, 'user');
     }
   }
 });
@@ -638,8 +651,30 @@ viewport.addEventListener('pointercancel', (e) => {
   }
 });
 
+// 全域拖曳安全釋放防護：若使用者在畫布外或快速滑動中釋放滑鼠，確保 100% 派發 UP 結束拖曳
+window.addEventListener('pointerup', (e) => {
+  if (isDragging) {
+    isDragging = false;
+    isPointerDown = false;
+    const { u, v } = getNormalizedCoords(e);
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({
+        action: 'mouse',
+        source: 'user',
+        mode: getMode(),
+        subaction: 'up',
+        button: dragButton,
+        u, v, delta: 0
+      }));
+      log('人類操作', `全域安全拖曳釋放 ${dragButton} (${u.toFixed(3)}, ${v.toFixed(3)})`, 'user');
+    }
+  }
+});
+
 viewport.addEventListener('mouseleave', () => {
   if (isAnnotating) return;
+  // 在直通模式下不擅自觸發焦點歸還，游標與焦點完全留給第二螢幕，使用者自已透過 80px 重疊區滑回
+  if (getMode() === 'direct') return;
   if (!isPointerDown && !isDragging) {
     if (ws && ws.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify({ action: 'restore_primary_focus' }));
@@ -651,7 +686,9 @@ viewport.addEventListener('wheel', (e) => {
   if (isAnnotating) return;
   e.preventDefault();
   const { u, v } = getNormalizedCoords(e);
-  const delta = Math.round(-e.deltaY);
+  // 換算標準 Win32 WHEEL_DELTA (每次滾動 1 格為 120，往上為正 +120，往下為負 -120)
+  const notch = Math.sign(-e.deltaY) || (e.deltaY < 0 ? 1 : -1);
+  const delta = notch * 120;
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({
       action: 'mouse',

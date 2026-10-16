@@ -2,13 +2,16 @@ use serde::Serialize;
 use std::mem::size_of;
 use windows::Win32::Foundation::{BOOL, HWND, LPARAM, RECT};
 use windows::Win32::Graphics::Gdi::{
-    EnumDisplayMonitors, GetMonitorInfoW, RedrawWindow, HDC, HMONITOR, HRGN, MONITORINFOEXW,
-    RDW_ALLCHILDREN, RDW_ERASE, RDW_FRAME, RDW_INVALIDATE, RDW_UPDATENOW,
+    ChangeDisplaySettingsExW, EnumDisplayMonitors, EnumDisplaySettingsW, GetMonitorInfoW,
+    RedrawWindow, CDS_GLOBAL, CDS_UPDATEREGISTRY, DEVMODEW, DISP_CHANGE_SUCCESSFUL, DM_POSITION,
+    ENUM_CURRENT_SETTINGS, HDC, HMONITOR, HRGN, MONITORINFOEXW, RDW_ALLCHILDREN, RDW_ERASE,
+    RDW_FRAME, RDW_INVALIDATE, RDW_UPDATENOW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     SetWindowPos, ShowWindow, HWND_NOTOPMOST, HWND_TOP, HWND_TOPMOST, SWP_FRAMECHANGED,
     SWP_NOACTIVATE, SWP_SHOWWINDOW, SW_MAXIMIZE, SW_RESTORE,
 };
+use windows::core::PCWSTR;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct MonitorDetail {
@@ -301,11 +304,70 @@ impl MonitorManager {
         Self::send_virtual_display_ioctl(0x00)
     }
 
+    /// 將虛擬第二螢幕自動排列至主螢幕右上角對角處 (Diagonal Topology)
+    /// 螢幕 1: (0, 0) 至 (W1, H1)
+    /// 螢幕 2: (W1, -H2) 至 (W1 + W2, 0)
+    /// 兩螢幕共享邊界長度為 0 (僅在頂點相切)，Windows 原生核心邊界直接封死實體滑鼠游標穿透！
+    pub fn align_virtual_monitor_diagonally(virtual_device_name: &str) -> Result<(), String> {
+        unsafe {
+            let monitors = Self::list_monitors();
+            let primary = monitors.iter().find(|m| m.is_primary).ok_or("找不到主螢幕")?;
+            let primary_w = primary.width;
+
+            let wide_dev: Vec<u16> = virtual_device_name.encode_utf16().chain(std::iter::once(0)).collect();
+            let pcw_dev = PCWSTR(wide_dev.as_ptr());
+
+            let mut dm = DEVMODEW::default();
+            dm.dmSize = size_of::<DEVMODEW>() as u16;
+
+            if !EnumDisplaySettingsW(pcw_dev, ENUM_CURRENT_SETTINGS, &mut dm).as_bool() {
+                return Err(format!("無法讀取顯示器 {} 的當前設定", virtual_device_name));
+            }
+
+            let target_x = primary_w;
+            // 與主螢幕右上方預留 80 像素重疊通道，使游標在 Y=[0, 80] 區間可自由滑回主螢幕
+            let target_y = -(dm.dmPelsHeight as i32) + 80;
+
+            // 若已經處於 80px 重疊排列位置，無需重複變更
+            if dm.Anonymous1.Anonymous2.dmPosition.x == target_x && dm.Anonymous1.Anonymous2.dmPosition.y == target_y {
+                return Ok(());
+            }
+
+            dm.dmFields = DM_POSITION;
+            dm.Anonymous1.Anonymous2.dmPosition.x = target_x;
+            dm.Anonymous1.Anonymous2.dmPosition.y = target_y;
+
+            let res = ChangeDisplaySettingsExW(
+                pcw_dev,
+                Some(&dm),
+                None,
+                CDS_UPDATEREGISTRY | CDS_GLOBAL,
+                None,
+            );
+
+            if res == DISP_CHANGE_SUCCESSFUL {
+                println!(
+                    "[MonitorManager] 虛擬螢幕已自動對角化隔離：X={}, Y={} (原生 0 邊界物理隔離生效)",
+                    target_x, target_y
+                );
+                Ok(())
+            } else {
+                Err(format!("ChangeDisplaySettingsExW 失敗，錯誤碼: {:?}", res))
+            }
+        }
+    }
+
     /// 確保虛擬螢幕存在：若不存在則透過 DeviceIoControl 自動瞬態掛載，並等待 DWM 註冊
     pub fn ensure_virtual_monitor() -> Result<MonitorDetail, String> {
         let monitors = Self::list_monitors();
         if let Some(target) = monitors.iter().find(|m| m.is_virtual_candidate).cloned() {
-            return Ok(target);
+            let _ = Self::align_virtual_monitor_diagonally(&target.name);
+            // 重新查詢更新後的拓撲
+            let updated = Self::list_monitors()
+                .into_iter()
+                .find(|m| m.name == target.name)
+                .unwrap_or(target);
+            return Ok(updated);
         }
 
         println!("[MonitorManager] 系統未檢測到虛擬螢幕，正在透過 DeviceIoControl 自動掛載 (cmd=0x10)...");
@@ -317,8 +379,16 @@ impl MonitorManager {
             std::thread::sleep(std::time::Duration::from_millis(150));
             let mons = Self::list_monitors();
             if let Some(target) = mons.iter().find(|m| m.is_virtual_candidate).cloned() {
-                println!("[MonitorManager] 虛擬螢幕掛載成功: {} ({}x{} @ X={})", target.name, target.width, target.height, target.x);
-                return Ok(target);
+                let _ = Self::align_virtual_monitor_diagonally(&target.name);
+                let updated = Self::list_monitors()
+                    .into_iter()
+                    .find(|m| m.name == target.name)
+                    .unwrap_or(target);
+                println!(
+                    "[MonitorManager] 虛擬螢幕掛載成功: {} ({}x{} @ X={}, Y={})",
+                    updated.name, updated.width, updated.height, updated.x, updated.y
+                );
+                return Ok(updated);
             }
         }
 

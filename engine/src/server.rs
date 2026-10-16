@@ -233,18 +233,6 @@ impl StreamServer {
             })
             .expect("Failed to spawn capture worker thread");
 
-        // 啟動 60Hz 主螢幕邊界空氣牆守護執行緒：防止實體滑鼠游標意外滑入或卡死在無實體螢幕的虛擬第二螢幕
-        let server_fence = self.clone();
-        std::thread::Builder::new()
-            .name("cursor-fence".into())
-            .spawn(move || {
-                crate::capture::ensure_default_desktop();
-                loop {
-                    server_fence.arbiter.enforce_primary_cursor_fence();
-                    std::thread::sleep(Duration::from_millis(16));
-                }
-            })
-            .expect("Failed to spawn cursor fence thread");
 
         // Accept WebSocket client connections
         while let Ok((stream, peer_addr)) = listener.accept().await {

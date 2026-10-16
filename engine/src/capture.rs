@@ -649,7 +649,8 @@ impl WindowCapturer {
                     ).max(1280);
                     let norm = wp.rcNormalPosition;
                     let cx = (norm.left + norm.right) / 2;
-                    return cx >= primary_w || (cx < 0 && cx > -5000);
+                    let cy = (norm.top + norm.bottom) / 2;
+                    return cx >= primary_w || (cx < 0 && cx > -5000) || (cy < 0 && cy > -5000);
                 }
             }
             let mut rect = RECT::default();
@@ -657,9 +658,10 @@ impl WindowCapturer {
                 let primary_w = windows::Win32::UI::WindowsAndMessaging::GetSystemMetrics(
                     windows::Win32::UI::WindowsAndMessaging::SM_CXSCREEN,
                 ).max(1280);
-                // 只要視窗中心點或左緣超出主螢幕範圍（支援右側或左側延伸螢幕，排除最小化 -32000 異常值），即視為位於虛擬第二螢幕
+                // 只要視窗中心點超出主螢幕範圍（右側、左側延伸螢幕，或對角右上負數 Y 軸，排除最小化 -32000 異常值），即視為位於虛擬第二螢幕
                 let center_x = (rect.left + rect.right) / 2;
-                center_x >= primary_w || (center_x < 0 && center_x > -5000)
+                let center_y = (rect.top + rect.bottom) / 2;
+                center_x >= primary_w || (center_x < 0 && center_x > -5000) || (center_y < 0 && center_y > -5000)
             } else {
                 false
             }

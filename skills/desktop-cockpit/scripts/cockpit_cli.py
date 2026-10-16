@@ -395,6 +395,7 @@ def main():
     # hotkey
     p_hotkey = subparsers.add_parser("hotkey", help="直通發送快捷鍵 (如 ctrl+l, enter, esc)")
     p_hotkey.add_argument("keys", help="按鍵組合 (如: 'ctrl+l', 'enter', 'alt+f4')")
+    p_hotkey.add_argument("--hwnd", help="可選特定目標視窗 HWND")
 
     # type
     p_type = subparsers.add_parser("type", help="向目標視窗注入文字")
@@ -403,11 +404,30 @@ def main():
 
     # mouse
     p_mouse = subparsers.add_parser("mouse", help="投遞滑鼠操作")
-    p_mouse.add_argument("subaction", choices=["click", "down", "up", "move"], help="滑鼠動作")
+    p_mouse.add_argument("subaction", choices=["click", "down", "up", "move", "wheel"], help="滑鼠動作")
     p_mouse.add_argument("u", type=float, help="歸一化 X 座標 (0.0~1.0)")
     p_mouse.add_argument("v", type=float, help="歸一化 Y 座標 (0.0~1.0)")
     p_mouse.add_argument("-b", "--button", default="left", choices=["left", "middle", "right"], help="按鍵")
+    p_mouse.add_argument("-d", "--delta", type=int, default=120, help="滾動量 (+120 向上, -120 向下，僅在 wheel 時生效)")
     p_mouse.add_argument("--hwnd", help="可選特定目標視窗 HWND")
+
+    # drag
+    p_drag = subparsers.add_parser("drag", help="執行平滑連續拖曳操作 (down -> 多幀 move -> up)")
+    p_drag.add_argument("start_u", type=float, help="起點歸一化 X 座標 (0.0~1.0)")
+    p_drag.add_argument("start_v", type=float, help="起點歸一化 Y 座標 (0.0~1.0)")
+    p_drag.add_argument("end_u", type=float, help="終點歸一化 X 座標 (0.0~1.0)")
+    p_drag.add_argument("end_v", type=float, help="終點歸一化 Y 座標 (0.0~1.0)")
+    p_drag.add_argument("-b", "--button", default="left", choices=["left", "middle", "right"], help="按鍵 (預設 left，3D 視角旋轉可選 middle)")
+    p_drag.add_argument("--steps", type=int, default=8, help="中間插值步數 (預設 8)")
+    p_drag.add_argument("--duration", type=float, default=0.25, help="拖曳耗時秒數 (預設 0.25s)")
+    p_drag.add_argument("--hwnd", help="可選特定目標視窗 HWND")
+
+    # wheel
+    p_wheel = subparsers.add_parser("wheel", help="投遞滑鼠滾輪滾動")
+    p_wheel.add_argument("u", type=float, default=0.5, nargs="?", help="歸一化 X 座標 (預設 0.5)")
+    p_wheel.add_argument("v", type=float, default=0.5, nargs="?", help="歸一化 Y 座標 (預設 0.5)")
+    p_wheel.add_argument("-d", "--delta", type=int, default=120, help="滾動量 (+120 向上, -120 向下)")
+    p_wheel.add_argument("--hwnd", help="可選特定目標視窗 HWND")
 
     # open-url
     p_url = subparsers.add_parser("open-url", help="在瀏覽器視窗中導航至指定網址 (自動 Ctrl+L -> 輸入網址 -> Enter)")
@@ -485,6 +505,11 @@ def main():
             import websockets
             send_char = None if (ctrl or alt) else char
             async with websockets.connect(WS_URL) as ws:
+                if args.hwnd:
+                    h = parse_hwnd(args.hwnd)
+                    await ws.send(json.dumps({"action": "set_window", "hwnd": h}))
+                    await asyncio.sleep(0.08)
+
                 # execute_key_direct 已內建修飾鍵 (Ctrl/Alt/Shift) 原子按壓與釋放及主畫面焦點歸還
                 await ws.send(json.dumps({
                     "action": "key", "source": "agent", "mode": "direct", "subaction": "down",
@@ -535,6 +560,7 @@ def main():
                     await ws.send(json.dumps({"action": "set_window", "hwnd": h}))
                     await asyncio.sleep(0.1)
 
+                delta_val = getattr(args, "delta", 120)
                 if sub == "click":
                     # 先讓 AI 虛擬游標平滑飛行至目標座標 (0% 實體滑鼠位移)
                     await ws.send(json.dumps({
@@ -542,10 +568,16 @@ def main():
                         "button": "none", "u": u_val, "v": v_val, "delta": 0
                     }))
                     await asyncio.sleep(0.16)
-                    # 執行原子化 click：快照主螢幕游標與焦點 -> 點擊 -> 12ms 內自動歸還主螢幕游標與焦點
+                    # 執行原子化 click
                     await ws.send(json.dumps({
                         "action": "mouse", "source": "agent", "mode": "direct", "subaction": "click",
                         "button": args.button, "u": u_val, "v": v_val, "delta": 0
+                    }))
+                    await asyncio.sleep(0.08)
+                elif sub == "wheel":
+                    await ws.send(json.dumps({
+                        "action": "mouse", "source": "agent", "mode": "direct", "subaction": "wheel",
+                        "button": "left", "u": u_val, "v": v_val, "delta": delta_val
                     }))
                     await asyncio.sleep(0.08)
                 else:
@@ -554,8 +586,81 @@ def main():
                         "button": args.button, "u": u_val, "v": v_val, "delta": 0
                     }))
                     await asyncio.sleep(0.06)
-                print(f"[MOUSE] 已執行 AI 虛擬游標 {sub} 於 ({u_val}, {v_val}) [{args.button}] (主畫面游標與焦點已無感歸還)")
+                print(f"[MOUSE] 已執行 AI 虛擬游標 {sub} 於 ({u_val}, {v_val}) [{args.button}]")
         asyncio.run(exec_mouse())
+
+    elif args.command == "drag":
+        start_u = args.start_u
+        start_v = args.start_v
+        end_u = args.end_u
+        end_v = args.end_v
+        btn = args.button
+        steps = max(1, args.steps)
+        dur = max(0.05, args.duration)
+
+        async def exec_drag():
+            import websockets
+            async with websockets.connect(WS_URL) as ws:
+                if args.hwnd:
+                    h = parse_hwnd(args.hwnd)
+                    await ws.send(json.dumps({"action": "set_window", "hwnd": h}))
+                    await asyncio.sleep(0.08)
+
+                # 1. 移動游標至拖曳起點
+                await ws.send(json.dumps({
+                    "action": "mouse", "source": "agent", "mode": "direct", "subaction": "move",
+                    "button": "none", "u": start_u, "v": start_v, "delta": 0
+                }))
+                await asyncio.sleep(0.06)
+
+                # 2. 按下滑鼠按鈕 (down)
+                await ws.send(json.dumps({
+                    "action": "mouse", "source": "agent", "mode": "direct", "subaction": "down",
+                    "button": btn, "u": start_u, "v": start_v, "delta": 0
+                }))
+                await asyncio.sleep(0.04)
+
+                # 3. 平滑連續插值移動 (move)
+                step_dt = dur / steps
+                for i in range(1, steps + 1):
+                    frac = i / steps
+                    cur_u = round(start_u + (end_u - start_u) * frac, 4)
+                    cur_v = round(start_v + (end_v - start_v) * frac, 4)
+                    await ws.send(json.dumps({
+                        "action": "mouse", "source": "agent", "mode": "direct", "subaction": "move",
+                        "button": btn, "u": cur_u, "v": cur_v, "delta": 0
+                    }))
+                    await asyncio.sleep(step_dt)
+
+                # 4. 釋放滑鼠按鈕 (up)
+                await ws.send(json.dumps({
+                    "action": "mouse", "source": "agent", "mode": "direct", "subaction": "up",
+                    "button": btn, "u": end_u, "v": end_v, "delta": 0
+                }))
+                await asyncio.sleep(0.06)
+                print(f"[DRAG] 已完成拖曳操作: ({start_u}, {start_v}) -> ({end_u}, {end_v}) [按鍵: {btn}, 步數: {steps}]")
+        asyncio.run(exec_drag())
+
+    elif args.command == "wheel":
+        u_val = args.u
+        v_val = args.v
+        delta_val = args.delta
+
+        async def exec_wheel():
+            import websockets
+            async with websockets.connect(WS_URL) as ws:
+                if args.hwnd:
+                    h = parse_hwnd(args.hwnd)
+                    await ws.send(json.dumps({"action": "set_window", "hwnd": h}))
+                    await asyncio.sleep(0.08)
+
+                await ws.send(json.dumps({
+                    "action": "mouse", "source": "agent", "mode": "direct", "subaction": "wheel",
+                    "button": "left", "u": u_val, "v": v_val, "delta": delta_val
+                }))
+                await asyncio.sleep(0.08)
+                print(f"[WHEEL] 已執行滾輪滾動: 座標 ({u_val}, {v_val}), delta={delta_val} ({'向上滾動' if delta_val > 0 else '向下滾動'})")
+        asyncio.run(exec_wheel())
 
     elif args.command == "open-url":
         async def exec_open_url():

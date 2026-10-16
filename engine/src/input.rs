@@ -13,7 +13,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     GetSystemMetrics, GetWindowRect, GetWindowThreadProcessId, PostMessageW, SetForegroundWindow,
-    SM_CXSCREEN, SM_CYSCREEN, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
+    SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
 };
 
 pub fn ensure_desktop_for_hwnd(hwnd: HWND) {
@@ -83,53 +83,15 @@ impl InputArbiter {
         }
     }
 
-    /// 主螢幕邊界空氣牆 (Primary Screen Cursor Fence)：
-    /// 當虛擬第二螢幕開啟時，使用者實體桌面並沒有那台螢幕；若實體滑鼠游標意外滑過主螢幕右緣 (x >= primary_w)
-    /// 且目前並非處於 12ms 原子點擊借用瞬間，立即將實體滑鼠游標攔截回主螢幕邊緣內，徹底杜絕「滑鼠卡進虛擬螢幕出不來」！
-    pub fn enforce_primary_cursor_fence(&self) {
-        if self.is_borrowing_cursor.load(Ordering::SeqCst) {
-            return;
-        }
-        unsafe {
-            let primary_w = GetSystemMetrics(SM_CXSCREEN).max(1280);
-            let primary_h = GetSystemMetrics(SM_CYSCREEN).max(720);
-            let mut cur = POINT::default();
-            if GetCursorPos(&mut cur).as_bool() {
-                if cur.x >= primary_w || cur.x < 0 || cur.y >= primary_h || cur.y < 0 {
-                    let saved_pt = self.saved_host_cursor.lock().ok().and_then(|g| *g);
-                    if let Some(pt) = saved_pt {
-                        if pt.x >= 0 && pt.x < primary_w && pt.y >= 0 && pt.y < primary_h {
-                            let _ = SetCursorPos(pt.x, pt.y);
-                            return;
-                        }
-                    }
-                    let clamped_x = cur.x.clamp(0, primary_w - 2);
-                    let clamped_y = cur.y.clamp(0, primary_h - 2);
-                    let _ = SetCursorPos(clamped_x, clamped_y);
-                } else {
-                    // 隨時記憶使用者在主螢幕上的最新合法游標座標
-                    if let Ok(mut guard) = self.saved_host_cursor.lock() {
-                        *guard = Some(cur);
-                    }
-                }
-            }
-        }
-    }
-
-    /// 在動用系統游標或切換焦點前，安全記錄使用者在「主螢幕」上的真實滑鼠位置與原焦點視窗
+    /// 在動用系統游標或切換焦點前，安全記錄使用者在主螢幕上的真實滑鼠位置與原焦點視窗
     pub unsafe fn snapshot_primary_state(&self, target_hwnd: HWND) {
         use windows::Win32::UI::WindowsAndMessaging::{GetAncestor, GA_ROOT};
         self.is_borrowing_cursor.store(true, Ordering::SeqCst);
-        let primary_w = GetSystemMetrics(SM_CXSCREEN).max(1280);
-        let primary_h = GetSystemMetrics(SM_CYSCREEN).max(720);
 
         let mut pt = POINT::default();
         if GetCursorPos(&mut pt).as_bool() {
-            // 僅當目前游標確實位於主螢幕內時才記錄，絕不被虛擬螢幕座標覆蓋！
-            if pt.x >= 0 && pt.x < primary_w && pt.y >= 0 && pt.y < primary_h {
-                if let Ok(mut guard) = self.saved_host_cursor.lock() {
-                    *guard = Some(pt);
-                }
+            if let Ok(mut guard) = self.saved_host_cursor.lock() {
+                *guard = Some(pt);
             }
         }
 
@@ -144,20 +106,11 @@ impl InputArbiter {
         }
     }
 
-    /// 僅歸還實體滑鼠游標至主螢幕原位（用於 down / move 瞬時投遞後，避免實體游標滯留於虛擬螢幕）
+    /// 僅歸還實體滑鼠游標至主螢幕原位（用於直通模式瞬時借還，不設任何邊界限制）
     pub unsafe fn restore_primary_cursor_only(&self) {
-        let primary_w = GetSystemMetrics(SM_CXSCREEN).max(1280);
-        let primary_h = GetSystemMetrics(SM_CYSCREEN).max(720);
-        let saved_pt = self.saved_host_cursor.lock().ok().and_then(|g| *g);
+        let saved_pt = self.saved_host_cursor.lock().ok().and_then(|mut g| g.take());
         if let Some(pt) = saved_pt {
             let _ = SetCursorPos(pt.x, pt.y);
-        } else {
-            let mut cur = POINT::default();
-            if GetCursorPos(&mut cur).as_bool() {
-                if cur.x < 0 || cur.x >= primary_w || cur.y < 0 || cur.y >= primary_h {
-                    let _ = SetCursorPos(primary_w / 2, primary_h / 2);
-                }
-            }
         }
         self.is_borrowing_cursor.store(false, Ordering::SeqCst);
     }
@@ -301,21 +254,63 @@ impl InputArbiter {
                 return Err("無法獲取視窗外框 RECT".into());
             }
 
-            let width = (win_rect.right - win_rect.left) as f64;
-            let height = (win_rect.bottom - win_rect.top) as f64;
+            let is_on_virtual = crate::capture::WindowCapturer::is_window_on_virtual_display(hwnd_val);
+            let virtual_mon = crate::monitor::MonitorManager::list_monitors()
+                .into_iter()
+                .find(|m| m.is_virtual_candidate);
 
-            // 將 normalized (u, v) 映射至物理螢幕絕對座標
-            let screen_x = (win_rect.left as f64 + (u.clamp(0.0, 1.0) * width)).round() as i32;
-            let screen_y = (win_rect.top as f64 + (v.clamp(0.0, 1.0) * height)).round() as i32;
+            let (screen_x, screen_y) = if let Some(vm) = virtual_mon {
+                if is_on_virtual || vm.x > 0 {
+                    let sx = vm.x as f64 + (u.clamp(0.0, 1.0) * vm.width as f64);
+                    let sy = vm.y as f64 + (v.clamp(0.0, 1.0) * vm.height as f64);
+                    (sx.round() as i32, sy.round() as i32)
+                } else {
+                    let width = (win_rect.right - win_rect.left).max(1) as f64;
+                    let height = (win_rect.bottom - win_rect.top).max(1) as f64;
+                    let sx = win_rect.left as f64 + (u.clamp(0.0, 1.0) * width);
+                    let sy = win_rect.top as f64 + (v.clamp(0.0, 1.0) * height);
+                    (sx.round() as i32, sy.round() as i32)
+                }
+            } else {
+                let width = (win_rect.right - win_rect.left).max(1) as f64;
+                let height = (win_rect.bottom - win_rect.top).max(1) as f64;
+                let sx = win_rect.left as f64 + (u.clamp(0.0, 1.0) * width);
+                let sy = win_rect.top as f64 + (v.clamp(0.0, 1.0) * height);
+                (sx.round() as i32, sy.round() as i32)
+            };
+
             let screen_pt = POINT {
                 x: screen_x,
                 y: screen_y,
             };
 
             // 尋找包含此物理座標點的最深層葉子控制項 (例如 Notepad 的 RichEditD2DPT)
-            let target_child = self.find_deepest_child(hwnd, screen_pt);
-            self.last_clicked_child
-                .store(target_child.0 as isize, Ordering::Relaxed);
+            // 拖曳 (Drag) 狀態保護：若在拖曳中 (move / up)，鎖定 down 時命中的同一個 target_child，
+            // 確保所有後續 move 與釋放 up 均投遞給原控制項，防止滑鼠滑出控制項時丟失 up 或座標錯位！
+            let target_child = if action == "move" || action == "up" {
+                let saved = self.last_clicked_child.load(Ordering::Relaxed);
+                if saved != 0 {
+                    let ch = HWND(saved as *mut _);
+                    use windows::Win32::UI::WindowsAndMessaging::{GetAncestor, IsWindow, GA_ROOT};
+                    if IsWindow(ch).as_bool() && (ch == hwnd || GetAncestor(ch, GA_ROOT) == hwnd) {
+                        ch
+                    } else {
+                        self.find_deepest_child(hwnd, screen_pt)
+                    }
+                } else {
+                    self.find_deepest_child(hwnd, screen_pt)
+                }
+            } else {
+                let ch = self.find_deepest_child(hwnd, screen_pt);
+                if action == "down" {
+                    self.last_clicked_child.store(ch.0 as isize, Ordering::Relaxed);
+                }
+                ch
+            };
+
+            if action == "up" {
+                self.last_clicked_child.store(0, Ordering::Relaxed);
+            }
 
             // 將螢幕物理座標轉換為該目標子控制項的局部 Client 座標
             let mut client_pt = screen_pt;
@@ -323,10 +318,27 @@ impl InputArbiter {
 
             let sub_x = client_pt.x;
             let sub_y = client_pt.y;
-            let l_param = LPARAM(((sub_y as u16 as isize) << 16) | (sub_x as u16 as isize));
+            let l_param = if action == "wheel" {
+                // WM_MOUSEWHEEL 的 lParam 依 Win32 標準必須是螢幕絕對座標 (screen coordinates)！
+                LPARAM(((screen_y as u16 as isize) << 16) | (screen_x as u16 as isize))
+            } else {
+                LPARAM(((sub_y as u16 as isize) << 16) | (sub_x as u16 as isize))
+            };
 
             if let Ok(mut guard) = self.ai_cursor.lock() {
                 *guard = (u.clamp(0.0, 1.0), v.clamp(0.0, 1.0));
+            }
+
+            if action == "wheel" {
+                let wp = ((delta as isize) << 16) as usize;
+                let _ = PostMessageW(target_child, WM_MOUSEWHEEL, WPARAM(wp), l_param);
+                if target_child != hwnd {
+                    let _ = PostMessageW(hwnd, WM_MOUSEWHEEL, WPARAM(wp), l_param);
+                }
+                return Ok(format!(
+                    "背景滾輪投遞成功: HWND=0x{:X}, delta={}, x={}, y={}",
+                    target_child.0 as usize, delta, screen_x, screen_y
+                ));
             }
 
             if action == "click" {
@@ -438,7 +450,8 @@ impl InputArbiter {
 
             // 2. Ctrl 快捷鍵處理 (Ctrl+A, Ctrl+C, Ctrl+V, Ctrl+Z, Ctrl+X, Ctrl+F 等)
             if ctrl && vk_code != 17 /* VK_CONTROL */ {
-                if !is_up {
+                // Ctrl+Shift+<字母> 語意與 Ctrl+<字母> 不同 (如 Ctrl+Shift+Z = Redo)，不可套用簡化訊息
+                if !is_up && !shift {
                     match vk_code {
                         65 => { // Ctrl+A (全選)
                             let _ = PostMessageW(target, 0x00B1 /* EM_SETSEL */, WPARAM(0), LPARAM(-1));
@@ -468,7 +481,7 @@ impl InputArbiter {
                 let _ = PostMessageW(target, msg, WPARAM(vk_code as usize), LPARAM(0));
                 let _ = PostMessageW(root, msg, WPARAM(vk_code as usize), LPARAM(0));
 
-                if !is_up && vk_code >= 65 && vk_code <= 90 {
+                if !is_up && (65..=90).contains(&vk_code) {
                     // Win32 標準控制碼 (Ctrl+A = 1, Ctrl+F = 6)
                     let ctrl_ascii = (vk_code - 64) as usize;
                     let _ = PostMessageW(target, WM_CHAR, WPARAM(ctrl_ascii), LPARAM(0));
@@ -572,11 +585,8 @@ impl InputArbiter {
             let norm_x = (((screen_x - vx) * 65535) / vw) as i32;
             let norm_y = (((screen_y - vy) * 65535) / vh) as i32;
 
-            // 僅在點擊 (click) 或按壓開始 (down) 時快照主螢幕游標與原焦點，拖曳移動 (move) 與釋放 (up) 絕不重複調用或覆蓋！
-            if action == "click" || action == "down" {
-                self.snapshot_primary_state(hwnd);
-                let _ = SetForegroundWindow(hwnd);
-            }
+            // 直通模式：直接激活目標視窗，將實體滑鼠送至第二螢幕，取消自動歸還焦點
+            let _ = SetForegroundWindow(hwnd);
 
             let (dw_down, dw_up) = match button {
                 "right" => (MOUSEEVENTF_RIGHTDOWN, MOUSEEVENTF_RIGHTUP),
@@ -584,10 +594,11 @@ impl InputArbiter {
                 _ => (MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP),
             };
 
-            if action == "click" {
-                // 原子級瞬移點擊：單一流程內完成 Move+Down -> 12ms -> Up -> 12ms -> 無縫歸還主螢幕滑鼠與鍵盤焦點
-                let down_inputs = [
-                    INPUT {
+            let mut inputs = Vec::new();
+
+            match action {
+                "click" => {
+                    inputs.push(INPUT {
                         r#type: INPUT_MOUSE,
                         Anonymous: INPUT_0 {
                             mi: MOUSEINPUT {
@@ -599,8 +610,8 @@ impl InputArbiter {
                                 dwExtraInfo: 0,
                             },
                         },
-                    },
-                    INPUT {
+                    });
+                    inputs.push(INPUT {
                         r#type: INPUT_MOUSE,
                         Anonymous: INPUT_0 {
                             mi: MOUSEINPUT {
@@ -612,38 +623,21 @@ impl InputArbiter {
                                 dwExtraInfo: 0,
                             },
                         },
-                    },
-                ];
-                SendInput(&down_inputs, size_of::<INPUT>() as i32);
-                std::thread::sleep(Duration::from_millis(12));
-
-                let up_inputs = [INPUT {
-                    r#type: INPUT_MOUSE,
-                    Anonymous: INPUT_0 {
-                        mi: MOUSEINPUT {
-                            dx: norm_x,
-                            dy: norm_y,
-                            mouseData: 0,
-                            dwFlags: dw_up | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK,
-                            time: 0,
-                            dwExtraInfo: 0,
+                    });
+                    inputs.push(INPUT {
+                        r#type: INPUT_MOUSE,
+                        Anonymous: INPUT_0 {
+                            mi: MOUSEINPUT {
+                                dx: norm_x,
+                                dy: norm_y,
+                                mouseData: 0,
+                                dwFlags: dw_up | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK,
+                                time: 0,
+                                dwExtraInfo: 0,
+                            },
                         },
-                    },
-                }];
-                SendInput(&up_inputs, size_of::<INPUT>() as i32);
-                std::thread::sleep(Duration::from_millis(12));
-
-                self.restore_primary_state(hwnd);
-
-                return Ok(format!(
-                    "原子直通點擊完成並已歸還主畫面滑鼠/焦點: HWND=0x{:X}, btn={}, x={}, y={}",
-                    hwnd.0 as usize, button, screen_x, screen_y
-                ));
-            }
-
-            let mut inputs = Vec::new();
-
-            match action {
+                    });
+                }
                 "down" => {
                     inputs.push(INPUT {
                         r#type: INPUT_MOUSE,
@@ -672,21 +666,6 @@ impl InputArbiter {
                         },
                     });
                 }
-                "up" => {
-                    inputs.push(INPUT {
-                        r#type: INPUT_MOUSE,
-                        Anonymous: INPUT_0 {
-                            mi: MOUSEINPUT {
-                                dx: norm_x,
-                                dy: norm_y,
-                                mouseData: 0,
-                                dwFlags: dw_up | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK,
-                                time: 0,
-                                dwExtraInfo: 0,
-                            },
-                        },
-                    });
-                }
                 "move" => {
                     inputs.push(INPUT {
                         r#type: INPUT_MOUSE,
@@ -702,6 +681,21 @@ impl InputArbiter {
                         },
                     });
                 }
+                "up" => {
+                    inputs.push(INPUT {
+                        r#type: INPUT_MOUSE,
+                        Anonymous: INPUT_0 {
+                            mi: MOUSEINPUT {
+                                dx: norm_x,
+                                dy: norm_y,
+                                mouseData: 0,
+                                dwFlags: dw_up | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK,
+                                time: 0,
+                                dwExtraInfo: 0,
+                            },
+                        },
+                    });
+                }
                 "wheel" => {
                     inputs.push(INPUT {
                         r#type: INPUT_MOUSE,
@@ -709,7 +703,20 @@ impl InputArbiter {
                             mi: MOUSEINPUT {
                                 dx: norm_x,
                                 dy: norm_y,
-                                mouseData: (delta * 120) as u32,
+                                mouseData: 0,
+                                dwFlags: MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK,
+                                time: 0,
+                                dwExtraInfo: 0,
+                            },
+                        },
+                    });
+                    inputs.push(INPUT {
+                        r#type: INPUT_MOUSE,
+                        Anonymous: INPUT_0 {
+                            mi: MOUSEINPUT {
+                                dx: 0,
+                                dy: 0,
+                                mouseData: delta as u32,
                                 dwFlags: MOUSEEVENTF_WHEEL,
                                 time: 0,
                                 dwExtraInfo: 0,
@@ -722,14 +729,6 @@ impl InputArbiter {
 
             if !inputs.is_empty() {
                 SendInput(&inputs, size_of::<INPUT>() as i32);
-            }
-
-            // 關鍵拖曳與滾動條修復：
-            // 只有在動作釋放 (up)、滾輪 (wheel) 或單次原子點擊時，才將實體游標與焦點一次性歸還主螢幕！
-            // 在按下 (down) 與拖曳移動 (move) 期間，游標持續停留在第二螢幕目標座標上，讓 Windows 拖曳與滾動條追蹤絕不中斷！
-            if action == "up" || action == "wheel" || !is_user {
-                std::thread::sleep(Duration::from_millis(10));
-                self.restore_primary_state(hwnd);
             }
 
             Ok(format!(

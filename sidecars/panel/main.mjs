@@ -3,6 +3,7 @@ import { dirname, join, resolve, basename, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn, execFile } from 'node:child_process';
 import { promisify } from 'node:util';
+import { homedir } from 'node:os';
 import { SidecarApp, Response } from 'sidecar_sdk';
 
 const execFileAsync = promisify(execFile);
@@ -13,9 +14,11 @@ let engineProcess = null;
 const ENGINE_PORT = 48280;
 
 function startEngine() {
-  if (engineProcess && !engineProcess.killed) {
+  const previous = engineProcess;
+  engineProcess = null;
+  if (previous && !previous.killed) {
     try {
-      engineProcess.kill();
+      previous.kill();
     } catch {}
   }
 
@@ -24,29 +27,39 @@ function startEngine() {
   const fallbackPath = join(HERE, '../../engine/target/release/gui-stream-engine.exe');
   const targetBinary = existsSync(binPath) ? binPath : fallbackPath;
 
-  console.log(`[Cockpit Sidecar] 啟動 Rust 串流引擎: ${targetBinary} --port ${ENGINE_PORT}`);
+  // 舊程序被 kill 後需要一點時間釋放 48280 埠，否則新引擎會因 bind 失敗立即退出
+  const delay = previous ? 500 : 0;
 
-  try {
-    engineProcess = spawn(targetBinary, ['--port', String(ENGINE_PORT)], {
-      stdio: ['ignore', 'inherit', 'inherit'],
-      windowsHide: true,
-      detached: false,
-    });
+  setTimeout(() => {
+    if (engineProcess) return; // 期間已有其他呼叫啟動了新引擎
 
-    engineProcess.on('exit', (code, signal) => {
-      console.log(`[Cockpit Sidecar] Rust 串流引擎退出: code=${code}, signal=${signal}`);
-      engineProcess = null;
-      setTimeout(() => {
-        if (!engineProcess) startEngine();
-      }, 1000);
-    });
+    console.log(`[Cockpit Sidecar] 啟動 Rust 串流引擎: ${targetBinary} --port ${ENGINE_PORT}`);
 
-    engineProcess.on('error', (err) => {
-      console.error('[Cockpit Sidecar] 無法啟動 Rust 引擎:', err);
-    });
-  } catch (err) {
-    console.error('[Cockpit Sidecar] spawn 失敗:', err);
-  }
+    try {
+      const proc = spawn(targetBinary, ['--port', String(ENGINE_PORT)], {
+        stdio: ['ignore', 'inherit', 'inherit'],
+        windowsHide: true,
+        detached: false,
+      });
+      engineProcess = proc;
+
+      proc.on('exit', (code, signal) => {
+        console.log(`[Cockpit Sidecar] Rust 串流引擎退出: code=${code}, signal=${signal}`);
+        // 只有「目前這個」程序退出才清除並自動重啟；被主動取代的舊程序不得影響新程序
+        if (engineProcess !== proc) return;
+        engineProcess = null;
+        setTimeout(() => {
+          if (!engineProcess) startEngine();
+        }, 1000);
+      });
+
+      proc.on('error', (err) => {
+        console.error('[Cockpit Sidecar] 無法啟動 Rust 引擎:', err);
+      });
+    } catch (err) {
+      console.error('[Cockpit Sidecar] spawn 失敗:', err);
+    }
+  }, delay);
 }
 
 // Clean up child process when sidecar exits
@@ -93,9 +106,13 @@ function resolveWorkspaceRoot(data) {
       if (existsSync(p)) return p;
     } catch {}
   }
-  const defaultDir = 'd:\\AntiGravity\\Agent-Study';
-  if (existsSync(defaultDir)) return defaultDir;
-  return process.cwd();
+  // 可攜式備援：環境變數 → 目前工作目錄（若不在 plugin 自身目錄內）→ 使用者家目錄
+  const envDir = process.env.COCKPIT_WORKSPACE;
+  if (envDir && existsSync(envDir)) return envDir;
+  const cwd = resolve(process.cwd());
+  const pluginDir = resolve(HERE, '..', '..');
+  if (!cwd.toLowerCase().startsWith(pluginDir.toLowerCase())) return cwd;
+  return homedir();
 }
 
 // 1. Save annotated image to disk (.gemini/annotated/)
@@ -152,9 +169,16 @@ app.api('/api/copy-image-to-clipboard', async (data) => {
     writeFileSync(fullPath, buffer);
 
     // Direct Windows OS Clipboard write via PowerShell
-    const normalizedPath = fullPath.replace(/\\/g, '\\\\');
-    const psScript = `Add-Type -AssemblyName System.Windows.Forms; $img = [System.Drawing.Image]::FromFile('${normalizedPath}'); [System.Windows.Forms.Clipboard]::SetImage($img); $img.Dispose()`;
-    await execFileAsync('powershell.exe', ['-NoProfile', '-NonInteractive', '-STA', '-ExecutionPolicy', 'Bypass', '-Command', psScript]);
+    // 路徑經由環境變數傳入，腳本本身為固定字串，避免路徑中的 ' $ ` 造成失敗或指令注入
+    const psScript =
+      "Add-Type -AssemblyName System.Windows.Forms; Add-Type -AssemblyName System.Drawing; " +
+      "$img = [System.Drawing.Image]::FromFile($env:COCKPIT_IMG_PATH); " +
+      "try { [System.Windows.Forms.Clipboard]::SetImage($img) } finally { $img.Dispose() }";
+    await execFileAsync(
+      'powershell.exe',
+      ['-NoProfile', '-NonInteractive', '-STA', '-ExecutionPolicy', 'Bypass', '-Command', psScript],
+      { env: { ...process.env, COCKPIT_IMG_PATH: fullPath }, windowsHide: true }
+    );
 
     return {
       success: true,
