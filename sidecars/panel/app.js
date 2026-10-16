@@ -14,6 +14,12 @@ const virtualMonStatus = document.getElementById('virtualMonStatus');
 const virtualMonText = document.getElementById('virtualMonText');
 const arbiterStatus = document.getElementById('arbiterStatus');
 const arbiterText = document.getElementById('arbiterText');
+const aiCursorStat = document.getElementById('aiCursorStat');
+const aiCursorText = document.getElementById('aiCursorText');
+const aiVirtualCursor = document.getElementById('aiVirtualCursor');
+const aiCursorBadge = document.getElementById('aiCursorBadge');
+const aiCursorRippleHost = document.getElementById('aiCursorRippleHost');
+const btnTestAiCursor = document.getElementById('btnTestAiCursor');
 const hudStat = document.getElementById('hudStat');
 const consoleLogs = document.getElementById('consoleLogs');
 
@@ -49,11 +55,12 @@ let frameCount = 0;
 let lastFpsTime = performance.now();
 let displayedFps = 30;
 let currentCoords = '(0.000, 0.000)';
+let aiBadgeTimer = null;
 
 function updateHudStat(coords) {
   if (coords) currentCoords = coords;
   if (hudStat) {
-    hudStat.textContent = `FPS: ${displayedFps} | 模式: ${getMode().toUpperCase()} | 座標: ${currentCoords}`;
+    hudStat.textContent = `FPS: ${displayedFps} | 游標: ${currentCoords}`;
   }
 }
 let isDragging = false;
@@ -77,12 +84,62 @@ function log(sender, text, type = 'sys') {
 
 function setHumanActive(desc) {
   arbiterStatus.className = 'status-pill status-human';
-  arbiterText.textContent = `👨‍💻 人類操作中 (${desc}) - AI 佇列已暫停`;
+  arbiterText.textContent = `👨‍💻 人類操作 (${desc})`;
   clearTimeout(humanTimeout);
   humanTimeout = setTimeout(() => {
-    arbiterStatus.className = 'status-pill status-idle';
-    arbiterText.textContent = '待機 (隨時接受人類或 AI 操作)';
+    arbiterStatus.className = 'status-pill status-guard';
+    arbiterText.textContent = '🛡️ 主畫面焦點保護中';
   }, 1500);
+}
+
+function handleAiCursorEvent(data) {
+  if (!data) return;
+  const u = typeof data.u === 'number' ? Math.max(0, Math.min(1, data.u)) : 0.5;
+  const v = typeof data.v === 'number' ? Math.max(0, Math.min(1, data.v)) : 0.5;
+  const sub = data.subaction || 'move';
+
+  if (aiVirtualCursor) {
+    aiVirtualCursor.style.left = `${(u * 100).toFixed(2)}%`;
+    aiVirtualCursor.style.top = `${(v * 100).toFixed(2)}%`;
+  }
+
+  const uvStr = `(${u.toFixed(3)}, ${v.toFixed(3)})`;
+  updateHudStat(uvStr);
+
+  if (sub === 'move') {
+    arbiterStatus.className = 'status-pill status-ai';
+    arbiterText.textContent = '🤖 AI 執行中 (焦點鎖定)';
+  } else if (sub === 'click' || sub === 'down') {
+    if (aiVirtualCursor) {
+      aiVirtualCursor.classList.add('clicking');
+      setTimeout(() => aiVirtualCursor.classList.remove('clicking'), 220);
+    }
+    if (aiCursorRippleHost) {
+      const ring = document.createElement('div');
+      ring.className = 'click-ripple ripple-agent';
+      aiCursorRippleHost.appendChild(ring);
+      setTimeout(() => ring.remove(), 580);
+    }
+    arbiterStatus.className = 'status-pill status-guard';
+    arbiterText.textContent = '🛡️ 點擊完成 (焦點已歸還)';
+    log('AI 點擊', `⚡ 原子點擊 ${uvStr} 完成 → 焦點已無縫歸還主畫面`, 'agent');
+  } else if (sub === 'type') {
+    const preview = data.text_preview || '';
+    arbiterStatus.className = 'status-pill status-guard';
+    arbiterText.textContent = '🛡️ 文字注入完成';
+    log('AI 輸入', `⌨️ 注入文字: "${preview}" (主畫面未受干擾)`, 'agent');
+  } else if (sub === 'key') {
+    arbiterStatus.className = 'status-pill status-guard';
+    arbiterText.textContent = '🛡️ 按鍵完成 (焦點已歸還)';
+  }
+
+  clearTimeout(aiBadgeTimer);
+  aiBadgeTimer = setTimeout(() => {
+    if (!humanTimeout) {
+      arbiterStatus.className = 'status-pill status-guard';
+      arbiterText.textContent = '🛡️ 主畫面焦點保護中';
+    }
+  }, 1400);
 }
 
 // Connect to Rust stream engine WebSocket
@@ -106,16 +163,34 @@ function connectWebSocket() {
           populateWindows(msg.data);
         } else if (msg.event === 'monitors' && Array.isArray(msg.data)) {
           updateMonitors(msg.data);
+        } else if (msg.event === 'ai_cursor' && msg.data) {
+          handleAiCursorEvent(msg.data);
         } else if (msg.event === 'window_dispatched') {
           if (msg.status === 'ok') {
             log('虛擬派駐', msg.message || '視窗已派駐至虛擬螢幕', 'sys');
             setVirtualBadgeActive(true, msg.data);
+            if (msg.data && msg.data.hwnd && windowSelect) {
+              const hwndStr = String(msg.data.hwnd);
+              localStorage.setItem('desktop_cockpit_selected_hwnd', hwndStr);
+              windowSelect.value = hwndStr;
+              if (windowSelect.value !== hwndStr && ws && ws.readyState === WebSocket.OPEN) {
+                ws.send(JSON.stringify({ action: 'get_windows' }));
+              }
+            }
             if (modeSelect) {
               modeSelect.value = 'direct';
               localStorage.setItem('desktop_cockpit_input_mode', 'direct');
             }
           } else {
             log('派駐失敗', msg.message || '無法派駐視窗', 'agent');
+          }
+        } else if (msg.event === 'window_set') {
+          if (msg.status === 'ok' && msg.data && msg.data.hwnd && windowSelect) {
+            const hwndStr = String(msg.data.hwnd);
+            localStorage.setItem('desktop_cockpit_selected_hwnd', hwndStr);
+            if (windowSelect.value !== hwndStr) {
+              windowSelect.value = hwndStr;
+            }
           }
         } else if (msg.event === 'window_restored') {
           if (msg.status === 'ok') {
@@ -219,9 +294,9 @@ function populateWindows(windows) {
     }
   });
 
-  // 若無先前紀錄，優先智慧預選 Notepad、Blender、KiCad 或第一個視窗
+  // 若無先前紀錄，優先智慧預選 Chrome、Firefox、Notepad、Blender、KiCad 或第一個視窗
   if (!autoSelectHwnd && windows.length > 0) {
-    const preferred = windows.find((w) => /notepad|記事本|blender|kicad/i.test(w.title)) || windows[0];
+    const preferred = windows.find((w) => /chrome|firefox|edge|notepad|記事本|blender|kicad/i.test(w.title)) || windows[0];
     if (preferred) {
       autoSelectHwnd = preferred.hwnd;
     }
@@ -244,24 +319,24 @@ function updateMonitors(monitors) {
   detectedVirtualMon = monitors.find((m) => m.is_virtual_candidate);
   if (detectedVirtualMon && virtualMonStatus) {
     virtualMonStatus.className = 'status-pill status-virtual';
-    virtualMonText.textContent = `🟢 虛擬顯示器在線 (${detectedVirtualMon.width}x${detectedVirtualMon.height})`;
-    if (btnToggleDisplay) btnToggleDisplay.textContent = '🔌 拔除螢幕';
+    virtualMonText.textContent = `🟢 虛擬艙在線 (${detectedVirtualMon.width}x${detectedVirtualMon.height})`;
+    if (btnToggleDisplay) btnToggleDisplay.textContent = '🔌 拔除';
     log('顯示拓撲', `檢測到虛擬螢幕: ${detectedVirtualMon.name} (${detectedVirtualMon.width}x${detectedVirtualMon.height} @ X=${detectedVirtualMon.x})`, 'sys');
   } else if (virtualMonStatus) {
     virtualMonStatus.className = 'status-pill status-idle';
-    virtualMonText.textContent = '⚪ 虛擬顯示器未啟用';
-    if (btnToggleDisplay) btnToggleDisplay.textContent = '🔌 開啟螢幕';
+    virtualMonText.textContent = '⚪ 虛擬螢幕未啟用';
+    if (btnToggleDisplay) btnToggleDisplay.textContent = '🔌 開啟';
   }
 }
 
 function setVirtualBadgeActive(active, monData) {
   if (active && virtualMonStatus) {
     virtualMonStatus.className = 'status-pill status-virtual-active';
-    const resText = monData ? `${monData.width}x${monData.height}` : '1024x768';
+    const resText = monData ? `${monData.width}x${monData.height}` : '1920x1080';
     virtualMonText.textContent = `🛡️ 隔離派駐中 (${resText})`;
   } else if (detectedVirtualMon && virtualMonStatus) {
     virtualMonStatus.className = 'status-pill status-virtual';
-    virtualMonText.textContent = `🟢 虛擬顯示器在線 (${detectedVirtualMon.width}x${detectedVirtualMon.height})`;
+    virtualMonText.textContent = `🟢 虛擬艙在線 (${detectedVirtualMon.width}x${detectedVirtualMon.height})`;
   }
 }
 
@@ -354,7 +429,7 @@ if (modeSelect) {
 if (modeSelect) {
   modeSelect.addEventListener('change', () => {
     localStorage.setItem('desktop_cockpit_input_mode', modeSelect.value);
-    const modeName = modeSelect.value === 'direct' ? '⚡ 直通模式 (DXGI / SendInput)' : '🌿 背景模式 (Win32 PostMessage)';
+    const modeName = modeSelect.value === 'direct' ? '⚡ 直通 + 焦點自動歸還' : '🌿 純背景模式 (PostMessage)';
     log('模式切換', `切換為 ${modeName}`, 'sys');
     updateHudStat();
     if (ws && ws.readyState === WebSocket.OPEN) {
@@ -401,8 +476,11 @@ function getNormalizedCoords(e) {
   const rect = canvas.getBoundingClientRect();
   const u = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
   const v = Math.max(0, Math.min(1, (e.clientY - rect.top) / rect.height));
-  return { u: parseFloat(u.toFixed(4)), v: parseFloat(v.toFixed(4)) };
+  return { u: parseFloat(u.toFixed(3)), v: parseFloat(v.toFixed(3)) };
 }
+
+let downCoords = { u: 0.5, v: 0.5 };
+let hasMovedDuringDrag = false;
 
 viewport.addEventListener('mousedown', (e) => {
   if (isAnnotating) return;
@@ -418,17 +496,23 @@ viewport.addEventListener('mousedown', (e) => {
   }
 
   isDragging = true;
+  hasMovedDuringDrag = false;
   const btnMap = ['left', 'middle', 'right'];
   dragButton = btnMap[e.button] || 'left';
 
   createClickRipple(e, 'user');
 
   const { u, v } = getNormalizedCoords(e);
-  if (ws && ws.readyState === WebSocket.OPEN) {
+  downCoords = { u, v };
+
+  // 立即將畫布上的虛擬 AI 游標移至點擊處，提供即時視覺回饋，同時實體滑鼠 100% 留在畫布原位
+  handleAiCursorEvent({ u, v, subaction: 'move', source: 'user' });
+
+  if (getMode() === 'background' && ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({
       action: 'mouse',
       source: 'user',
-      mode: getMode(),
+      mode: 'background',
       subaction: 'down',
       button: dragButton,
       u, v, delta: 0
@@ -437,7 +521,6 @@ viewport.addEventListener('mousedown', (e) => {
 
   const btnLabels = { left: '左鍵點擊', middle: '中鍵 (Blender 旋轉)', right: '右鍵選單' };
   setHumanActive(btnLabels[dragButton]);
-  log('人類操作', `${btnLabels[dragButton]} 座標: (${u}, ${v}) [${getMode()}]`, 'user');
 });
 
 window.addEventListener('mouseup', (e) => {
@@ -445,48 +528,89 @@ window.addEventListener('mouseup', (e) => {
   if (isDragging) {
     isDragging = false;
     const { u, v } = getNormalizedCoords(e);
+    const mode = getMode();
+
     if (ws && ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify({
-        action: 'mouse',
-        source: 'user',
-        mode: getMode(),
-        subaction: 'up',
-        button: dragButton,
-        u, v, delta: 0
-      }));
+      if (mode === 'direct' && !hasMovedDuringDrag) {
+        // 單次點擊：發送原子化 click 指令（引擎在 12ms 內完成點擊並立即將實體游標與焦點歸還主螢幕，絕不卡住滑鼠！）
+        ws.send(JSON.stringify({
+          action: 'mouse',
+          source: 'user',
+          mode: 'direct',
+          subaction: 'click',
+          button: dragButton,
+          u: downCoords.u,
+          v: downCoords.v,
+          delta: 0
+        }));
+        handleAiCursorEvent({ u: downCoords.u, v: downCoords.v, subaction: 'click', source: 'user', focus_restored: true });
+        log('人類操作', `虛擬游標原子點擊 (${downCoords.u}, ${downCoords.v}) [${dragButton}] → 主畫面滑鼠 0 位移`, 'user');
+      } else {
+        ws.send(JSON.stringify({
+          action: 'mouse',
+          source: 'user',
+          mode,
+          subaction: 'up',
+          button: dragButton,
+          u, v, delta: 0
+        }));
+        log('人類操作', `釋放 ${dragButton} → 滑鼠與鍵盤焦點已自動歸還主畫面`, 'user');
+      }
     }
-    log('人類操作', `釋放 ${dragButton} [${getMode()}]`, 'user');
+    hasMovedDuringDrag = false;
   }
 });
 
 viewport.addEventListener('mouseleave', () => {
   if (isAnnotating) return;
-  if (isDragging) {
-    isDragging = false;
-    log('人類操作', '滑鼠移出畫布，重置拖曳狀態', 'sys');
+  if (!isDragging) {
+    viewport.blur();
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ action: 'restore_primary_focus' }));
+    }
   }
 });
 
 viewport.addEventListener('mousemove', (e) => {
   if (isAnnotating) return;
   const { u, v } = getNormalizedCoords(e);
-  updateHudStat(`(${u}, ${v})`);
+  updateHudStat(`(${u.toFixed(3)}, ${v.toFixed(3)})`);
 
   if (isDragging) {
-    const now = performance.now();
-    if (now - lastMoveTime >= 16) {
-      lastMoveTime = now;
-      if (ws && ws.readyState === WebSocket.OPEN) {
+    const dist = Math.hypot(u - downCoords.u, v - downCoords.v);
+    if (!hasMovedDuringDrag && dist > 0.008) {
+      hasMovedDuringDrag = true;
+      if (getMode() === 'direct' && ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({
           action: 'mouse',
           source: 'user',
-          mode: getMode(),
-          subaction: 'move',
+          mode: 'direct',
+          subaction: 'down',
           button: dragButton,
-          u, v, delta: 0
+          u: downCoords.u,
+          v: downCoords.v,
+          delta: 0
         }));
       }
-      setHumanActive(dragButton === 'middle' ? '中鍵 3D 視角旋轉' : '滑鼠拖曳軌跡');
+    }
+
+    if (hasMovedDuringDrag) {
+      const now = performance.now();
+      if (now - lastMoveTime >= 16) {
+        lastMoveTime = now;
+        handleAiCursorEvent({ u, v, subaction: 'move', source: 'user' });
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({
+            action: 'mouse',
+            source: 'user',
+            mode: getMode(),
+            subaction: 'move',
+            button: dragButton,
+            u, v, delta: 0
+          }));
+        }
+        setHumanActive(dragButton === 'middle' ? '中鍵 3D 視角旋轉' : '滑鼠拖曳軌跡');
+      }
     }
   }
 });
@@ -531,6 +655,9 @@ viewport.addEventListener('keydown', (e) => {
 
   if (e.key === 'Escape') {
     viewport.blur();
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ action: 'restore_primary_focus' }));
+    }
     log('系統', '使用者按下 Esc，鍵盤焦點已釋放回 Antigravity 聊天室', 'sys');
     return;
   }
@@ -591,11 +718,35 @@ viewport.addEventListener('keyup', (e) => {
   }
 });
 
-
-
-// ADC 2.0 UIA Semantic Sensing & Visual Memory
+// ADC 3.0 UIA Semantic Sensing, Visual Memory & AI Virtual Cursor Demo
 const btnScanUIA = document.getElementById('btnScanUIA');
 const btnDiff = document.getElementById('btnDiff');
+
+if (btnTestAiCursor) {
+  btnTestAiCursor.addEventListener('click', () => {
+    const u = parseFloat((0.25 + Math.random() * 0.5).toFixed(3));
+    const v = parseFloat((0.25 + Math.random() * 0.5).toFixed(3));
+    log('AI 游標測試', `🤖 啟動虛擬 AI 游標平滑導航至 (${u}, ${v}) [主畫面實體滑鼠 0 位移]...`, 'agent');
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({
+        action: 'mouse',
+        source: 'agent',
+        mode: getMode(),
+        subaction: 'move',
+        button: 'left',
+        u, v, delta: 0
+      }));
+      setTimeout(() => {
+        handleAiCursorEvent({ u, v, subaction: 'click', button: 'left', source: 'agent', focus_restored: true });
+      }, 280);
+    } else {
+      handleAiCursorEvent({ u, v, subaction: 'move', button: 'left', source: 'agent' });
+      setTimeout(() => {
+        handleAiCursorEvent({ u, v, subaction: 'click', button: 'left', source: 'agent', focus_restored: true });
+      }, 280);
+    }
+  });
+}
 
 if (btnScanUIA) {
   btnScanUIA.addEventListener('click', () => {

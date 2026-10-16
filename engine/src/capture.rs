@@ -23,7 +23,55 @@ extern "system" {
     fn PrintWindow(hwnd: HWND, hdc: HDC, nflags: u32) -> BOOL;
 }
 
+#[link(name = "dwmapi")]
+extern "system" {
+    fn DwmGetWindowAttribute(
+        hwnd: HWND,
+        dwattribute: u32,
+        pvattribute: *mut std::ffi::c_void,
+        cbattribute: u32,
+    ) -> i32;
+}
+
+#[link(name = "kernel32")]
+extern "system" {
+    fn OpenProcess(dwdesiredaccess: u32, binherithandle: BOOL, dwprocessid: u32) -> isize;
+    fn QueryFullProcessImageNameW(
+        hprocess: isize,
+        dwflags: u32,
+        lpexename: *mut u16,
+        lpdwsize: *mut u32,
+    ) -> BOOL;
+    fn CloseHandle(hobject: isize) -> BOOL;
+}
+
 pub const PW_RENDERFULLCONTENT: u32 = 2;
+const DWMWA_CLOAKED: u32 = 14;
+const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
+
+unsafe fn is_self_or_ide_window(hwnd: HWND) -> bool {
+    let mut pid: u32 = 0;
+    windows::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId(hwnd, Some(&mut pid));
+    if pid == 0 {
+        return false;
+    }
+    if pid == std::process::id() {
+        return true;
+    }
+    let h_proc = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, BOOL(0), pid);
+    if h_proc == 0 {
+        return false;
+    }
+    let mut buf = [0u16; 512];
+    let mut size = buf.len() as u32;
+    let ok = QueryFullProcessImageNameW(h_proc, 0, buf.as_mut_ptr(), &mut size);
+    let _ = CloseHandle(h_proc);
+    if !ok.as_bool() || size == 0 {
+        return false;
+    }
+    let path = String::from_utf16_lossy(&buf[..size as usize]).to_ascii_lowercase();
+    path.ends_with("\\antigravity.exe") || path.ends_with("\\gui-stream-engine.exe")
+}
 
 /// 確保當前執行緒已正確綁定至作用中互動桌面，並啟用 Per-Monitor V2 DPI 認知
 pub fn ensure_default_desktop() {
@@ -63,6 +111,23 @@ impl WindowEnumerator {
             return BOOL(1);
         }
 
+        // 排除 Antigravity IDE 主視窗與串流引擎自身，防止誤把 IDE 自己派駐至虛擬螢幕造成無限鏡像！
+        if is_self_or_ide_window(hwnd) {
+            return BOOL(1);
+        }
+
+        // 過濾 Windows 11 DWM Cloaked (背景隱形/系統覆蓋層，例如 Click to Do / Recall / 懸浮輸入法)
+        let mut cloaked: u32 = 0;
+        let _ = DwmGetWindowAttribute(
+            hwnd,
+            DWMWA_CLOAKED,
+            &mut cloaked as *mut u32 as *mut std::ffi::c_void,
+            size_of::<u32>() as u32,
+        );
+        if cloaked != 0 {
+            return BOOL(1);
+        }
+
         let len = GetWindowTextLengthW(hwnd);
         if len <= 0 {
             return BOOL(1);
@@ -79,7 +144,12 @@ impl WindowEnumerator {
         let height = rect.bottom - rect.top;
 
         if !trimmed.is_empty() && width > 100 && height > 100 {
-            if trimmed != "Program Manager" && trimmed != "Settings" && trimmed != "Windows Input Experience" {
+            if trimmed != "Program Manager"
+                && trimmed != "Settings"
+                && trimmed != "Windows Input Experience"
+                && trimmed != "Click to Do"
+                && trimmed != "Microsoft Text Input Application"
+            {
                 list.push(WindowInfo {
                     hwnd: hwnd.0 as isize,
                     title: trimmed.to_string(),
@@ -496,12 +566,14 @@ pub struct WindowCapturer {
     dxgi: Option<DxgiCapturer>,
     gdi: GdiCapturer,
     pub last_jpeg: Arc<Vec<u8>>,
+    pub needs_fallback_frame: bool,
 }
 
 impl WindowCapturer {
     pub fn new(hwnd_val: isize) -> Self {
         let mut dxgi = None;
         let mut last_jpeg = Arc::new(Vec::new());
+        let mut gdi = GdiCapturer::new(hwnd_val);
         let is_on_virtual = Self::is_window_on_virtual_display(hwnd_val);
 
         if is_on_virtual {
@@ -519,13 +591,21 @@ impl WindowCapturer {
             }
         }
 
+        // 若 DXGI 冷啟動尚未抓到第一幀（因為視窗剛派駐完畢、畫面靜止），立即透過 GDI PrintWindow 抓取首幀！
+        if last_jpeg.is_empty() {
+            if let Ok(Some(frame)) = gdi.capture_jpeg(75) {
+                last_jpeg = frame;
+            }
+        }
+
         Self {
             hwnd: hwnd_val,
             width: 0,
             height: 0,
             dxgi,
-            gdi: GdiCapturer::new(hwnd_val),
+            gdi,
             last_jpeg,
+            needs_fallback_frame: true,
         }
     }
 
@@ -534,8 +614,12 @@ impl WindowCapturer {
             let hwnd = HWND(hwnd_val as *mut _);
             let mut rect = RECT::default();
             if GetWindowRect(hwnd, &mut rect).is_ok() {
-                // 實體主螢幕位於 (0, 0)，虛擬第二螢幕位於 X=3200
-                rect.left >= 2000
+                let primary_w = windows::Win32::UI::WindowsAndMessaging::GetSystemMetrics(
+                    windows::Win32::UI::WindowsAndMessaging::SM_CXSCREEN,
+                ).max(1280);
+                // 只要視窗中心點或左緣超出主螢幕範圍（支援右側或左側延伸螢幕），即視為位於虛擬第二螢幕
+                let center_x = (rect.left + rect.right) / 2;
+                center_x >= primary_w || center_x < 0
             } else {
                 false
             }
@@ -544,9 +628,7 @@ impl WindowCapturer {
 
     pub fn invalidate(&mut self) {
         self.gdi.invalidate();
-        if let Some(dxgi) = self.dxgi.as_mut() {
-            dxgi.last_jpeg = Arc::new(Vec::new());
-        }
+        self.needs_fallback_frame = true;
     }
 
     pub fn capture_jpeg(&mut self, quality: u8) -> Result<Option<Arc<Vec<u8>>>, String> {
@@ -555,6 +637,7 @@ impl WindowCapturer {
             if let Ok(c) = DxgiCapturer::new_for_display("") {
                 println!("[WindowCapturer] 偵測到視窗進入虛擬螢幕 ({})，動態晉升為 DXGI 硬體擷取", c.display_name);
                 self.dxgi = Some(c);
+                self.needs_fallback_frame = true;
             }
         }
 
@@ -565,11 +648,15 @@ impl WindowCapturer {
                     self.width = dxgi.width as i32;
                     self.height = dxgi.height as i32;
                     self.last_jpeg = frame.clone();
+                    self.needs_fallback_frame = false;
                     return Ok(Some(frame));
                 }
                 Ok(None) => {
-                    // 畫面無變動：GPU Timeout 快速返回，0.00% CPU
-                    return Ok(None);
+                    // 若剛發生視窗切換、派駐或輸入重繪 (needs_fallback_frame == true)，
+                    // 不直接返回 None，而是往下穿透至 GDI PrintWindow 強制補抓最新視窗畫面！
+                    if !self.needs_fallback_frame && !self.last_jpeg.is_empty() {
+                        return Ok(None);
+                    }
                 }
                 Err(e) => {
                     eprintln!("[WindowCapturer] DXGI 捕獲異常 ({:?})，降級至 GDI 模式", e);
@@ -578,7 +665,8 @@ impl WindowCapturer {
             }
         }
 
-        // GDI 備援路徑
+        // GDI 備援與強制補幀路徑 (PrintWindow PW_RENDERFULLCONTENT)
+        self.needs_fallback_frame = false;
         let res = self.gdi.capture_jpeg(quality);
         if let Ok(Some(ref frame)) = res {
             self.width = self.gdi.width;

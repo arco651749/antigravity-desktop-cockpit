@@ -20,6 +20,7 @@ pub struct StreamServer {
     pub target_fps: Arc<AtomicU32>,
     pub arbiter: Arc<InputArbiter>,
     pub frame_tx: broadcast::Sender<Arc<Vec<u8>>>,
+    pub event_tx: broadcast::Sender<String>,
     pub last_frame: Arc<std::sync::RwLock<Option<Arc<Vec<u8>>>>>,
     pub needs_refresh: Arc<AtomicBool>,
     pub capture_mode: Arc<std::sync::RwLock<String>>,
@@ -79,6 +80,8 @@ pub enum ClientCommand {
     SetWindow { hwnd: isize },
     #[serde(rename = "set_fps")]
     SetFps { fps: u32 },
+    #[serde(rename = "restore_primary_focus")]
+    RestorePrimaryFocus,
     #[serde(rename = "mouse")]
     Mouse {
         #[serde(default = "default_source")]
@@ -149,11 +152,13 @@ pub struct ServerEvent {
 impl StreamServer {
     pub fn new() -> Self {
         let (frame_tx, _) = broadcast::channel(16);
+        let (event_tx, _) = broadcast::channel(64);
         Self {
             target_hwnd: Arc::new(AtomicIsize::new(0)),
             target_fps: Arc::new(AtomicU32::new(30)),
             arbiter: Arc::new(InputArbiter::new()),
             frame_tx,
+            event_tx,
             last_frame: Arc::new(std::sync::RwLock::new(None)),
             needs_refresh: Arc::new(AtomicBool::new(true)),
             capture_mode: Arc::new(std::sync::RwLock::new("direct".to_string())),
@@ -228,6 +233,19 @@ impl StreamServer {
             })
             .expect("Failed to spawn capture worker thread");
 
+        // 啟動 60Hz 主螢幕邊界空氣牆守護執行緒：防止實體滑鼠游標意外滑入或卡死在無實體螢幕的虛擬第二螢幕
+        let server_fence = self.clone();
+        std::thread::Builder::new()
+            .name("cursor-fence".into())
+            .spawn(move || {
+                crate::capture::ensure_default_desktop();
+                loop {
+                    server_fence.arbiter.enforce_primary_cursor_fence();
+                    std::thread::sleep(Duration::from_millis(16));
+                }
+            })
+            .expect("Failed to spawn cursor fence thread");
+
         // Accept WebSocket client connections
         while let Ok((stream, peer_addr)) = listener.accept().await {
             let server_conn = self.clone();
@@ -300,6 +318,9 @@ impl StreamServer {
                 }
 
                 if capturer_opt.as_ref().map(|c| c.hwnd) != Some(hwnd_val) {
+                    // 關鍵修正：必須先將舊的 capturer_opt 設為 None 釋放 IDXGIOutputDuplication，
+                    // 否則新建 WindowCapturer 時呼叫 DuplicateOutput 會因 DXGI 單一實例鎖定而失敗！
+                    capturer_opt = None;
                     let capturer = WindowCapturer::new(hwnd_val);
                     if !capturer.last_jpeg.is_empty() {
                         let frame = capturer.last_jpeg.clone();
@@ -364,6 +385,7 @@ impl StreamServer {
         let (mut ws_writer, mut ws_reader) = ws_stream.split();
 
         let mut frame_rx = self.frame_tx.subscribe();
+        let mut event_rx = self.event_tx.subscribe();
 
         // Channel for text control messages from reader to writer
         let (ctrl_tx, mut ctrl_rx) = tokio::sync::mpsc::channel::<String>(32);
@@ -372,7 +394,7 @@ impl StreamServer {
         self.needs_refresh.store(true, Ordering::Relaxed);
         let init_frame = self.last_frame.read().unwrap().clone();
 
-        // Task 1: Stream binary JPEG frames + send text control messages
+        // Task 1: Stream binary JPEG frames + send text control messages + broadcast events
         let send_task = tokio::spawn(async move {
             if let Some(cached) = init_frame {
                 let _ = ws_writer.send(Message::Binary((*cached).clone())).await;
@@ -386,6 +408,13 @@ impl StreamServer {
                             }
                         } else {
                             break;
+                        }
+                    }
+                    bcast = event_rx.recv() => {
+                        if let Ok(text) = bcast {
+                            if ws_writer.send(Message::Text(text)).await.is_err() {
+                                break;
+                            }
                         }
                     }
                     frame = frame_rx.recv() => {
@@ -657,13 +686,19 @@ impl StreamServer {
                                 Ok(mon) => {
                                     self.target_hwnd.store(hwnd, Ordering::SeqCst);
                                     self.needs_refresh.store(true, Ordering::Relaxed);
+                                    let mut data_val = serde_json::to_value(&mon)?;
+                                    if let Some(obj) = data_val.as_object_mut() {
+                                        obj.insert("hwnd".to_string(), serde_json::json!(hwnd));
+                                    }
                                     let resp = ServerEvent {
                                         event: "window_dispatched".into(),
                                         status: "ok".into(),
-                                        message: Some(format!("視窗已成功派駐至虛擬螢幕 ({} @ {}x{})", mon.name, mon.width, mon.height)),
-                                        data: Some(serde_json::to_value(mon)?),
+                                        message: Some(format!("視窗已成功派駐、最大化並重繪至虛擬螢幕 ({} @ {}x{})", mon.name, mon.width, mon.height)),
+                                        data: Some(data_val),
                                     };
-                                    let _ = ctrl_tx.send(serde_json::to_string(&resp)?).await;
+                                    let json_str = serde_json::to_string(&resp)?;
+                                    let _ = self.event_tx.send(json_str.clone());
+                                    let _ = ctrl_tx.send(json_str).await;
                                 }
                                 Err(e) => {
                                     let resp = ServerEvent {
@@ -748,14 +783,9 @@ impl StreamServer {
                         }
                         Ok(ClientCommand::SetWindow { hwnd }) => {
                             *self.capture_mode.write().unwrap() = "direct".to_string();
-                            unsafe {
-                                let h = windows::Win32::Foundation::HWND(hwnd as *mut _);
-                                let _ = windows::Win32::UI::WindowsAndMessaging::ShowWindow(
-                                    h,
-                                    windows::Win32::UI::WindowsAndMessaging::SW_RESTORE,
-                                );
-                            }
-                            if !crate::capture::WindowCapturer::is_window_on_virtual_display(hwnd) {
+                            // 若目標視窗已經在虛擬螢幕上，切換時自動執行最大化、Z-Order 置頂與強制重繪，確保畫面立即切換為該視窗！
+                            // 若目標視窗仍在主螢幕上，不擅自搬離主螢幕，待使用者點擊「🚀 派駐虛擬艙」時才搬移。
+                            if crate::capture::WindowCapturer::is_window_on_virtual_display(hwnd) {
                                 let _ = MonitorManager::dispatch_to_virtual(hwnd);
                             }
 
@@ -764,10 +794,12 @@ impl StreamServer {
                             let resp = ServerEvent {
                                 event: "window_set".into(),
                                 status: "ok".into(),
-                                message: Some(format!("已自動還原並派駐視窗 0x{:X} 至虛擬螢幕", hwnd)),
-                                data: None,
+                                message: Some(format!("已鎖定目標視窗 0x{:X}", hwnd)),
+                                data: Some(serde_json::json!({ "hwnd": hwnd })),
                             };
-                            let _ = ctrl_tx.send(serde_json::to_string(&resp)?).await;
+                            let json_str = serde_json::to_string(&resp)?;
+                            let _ = self.event_tx.send(json_str.clone());
+                            let _ = ctrl_tx.send(json_str).await;
                         }
                         Ok(ClientCommand::SetFps { fps }) => {
                             let clamped = fps.clamp(1, 60);
@@ -776,6 +808,19 @@ impl StreamServer {
                                 event: "fps_set".into(),
                                 status: "ok".into(),
                                 message: Some(format!("幀率設定為 {} FPS", clamped)),
+                                data: None,
+                            };
+                            let _ = ctrl_tx.send(serde_json::to_string(&resp)?).await;
+                        }
+                        Ok(ClientCommand::RestorePrimaryFocus) => {
+                            let target_hwnd = self.resolve_target_hwnd(None);
+                            unsafe {
+                                self.arbiter.restore_primary_state(windows::Win32::Foundation::HWND(target_hwnd as *mut _));
+                            }
+                            let resp = ServerEvent {
+                                event: "primary_focus_restored".into(),
+                                status: "ok".into(),
+                                message: Some("實體滑鼠與鍵盤焦點已歸還主螢幕".into()),
                                 data: None,
                             };
                             let _ = ctrl_tx.send(serde_json::to_string(&resp)?).await;
@@ -823,6 +868,26 @@ impl StreamServer {
                                 (self.target_hwnd.load(Ordering::Relaxed), u, v)
                             };
 
+                            // 廣播 AI 虛擬游標移動或點擊事件給所有前端面板，讓畫布即時渲染「🤖 AI 游標」動畫
+                            if !source.eq_ignore_ascii_case("user") {
+                                let bcast_evt = ServerEvent {
+                                    event: "ai_cursor".into(),
+                                    status: "ok".into(),
+                                    message: None,
+                                    data: Some(serde_json::json!({
+                                        "u": sub_u,
+                                        "v": sub_v,
+                                        "subaction": subaction,
+                                        "button": button,
+                                        "source": source,
+                                        "focus_restored": subaction == "click" || subaction == "up" || subaction == "wheel"
+                                    })),
+                                };
+                                if let Ok(json_str) = serde_json::to_string(&bcast_evt) {
+                                    let _ = self.event_tx.send(json_str);
+                                }
+                            }
+
                             if target_hwnd != 0 {
                                 let effective_mode = if is_secret { "background" } else { &mode };
                                 let res = if effective_mode.eq_ignore_ascii_case("background") {
@@ -837,7 +902,7 @@ impl StreamServer {
                                 match res {
                                     Ok(msg) => {
                                         self.needs_refresh.store(true, Ordering::Relaxed);
-                                        if subaction != "move" {
+                                        if subaction != "move" || !source.eq_ignore_ascii_case("user") {
                                             let resp = ServerEvent {
                                                 event: "input_ack".into(),
                                                 status: "ok".into(),
@@ -879,6 +944,29 @@ impl StreamServer {
                         }) => {
                             let is_secret = *self.capture_mode.read().unwrap() == "secret_desktop";
                             let target_hwnd = self.resolve_target_hwnd(None);
+
+                            if !source.eq_ignore_ascii_case("user") && subaction == "down" {
+                                let (cu, cv) = self.arbiter.ai_cursor.lock().map(|g| *g).unwrap_or((0.5, 0.5));
+                                let bcast_evt = ServerEvent {
+                                    event: "ai_cursor".into(),
+                                    status: "ok".into(),
+                                    message: None,
+                                    data: Some(serde_json::json!({
+                                        "u": cu,
+                                        "v": cv,
+                                        "subaction": "key",
+                                        "vk": vk,
+                                        "char": char,
+                                        "ctrl": ctrl,
+                                        "alt": alt,
+                                        "shift": shift,
+                                        "focus_restored": true
+                                    })),
+                                };
+                                if let Ok(json_str) = serde_json::to_string(&bcast_evt) {
+                                    let _ = self.event_tx.send(json_str);
+                                }
+                            }
 
                             if target_hwnd != 0 {
                                 let effective_mode = if is_secret { "background" } else { &mode };
@@ -924,6 +1012,23 @@ impl StreamServer {
                         }
                         Ok(ClientCommand::TypeText { text, hwnd }) => {
                             let target_hwnd = self.resolve_target_hwnd(hwnd);
+
+                            let (cu, cv) = self.arbiter.ai_cursor.lock().map(|g| *g).unwrap_or((0.5, 0.5));
+                            let bcast_evt = ServerEvent {
+                                event: "ai_cursor".into(),
+                                status: "ok".into(),
+                                message: None,
+                                data: Some(serde_json::json!({
+                                    "u": cu,
+                                    "v": cv,
+                                    "subaction": "type",
+                                    "text_preview": text.chars().take(18).collect::<String>(),
+                                    "focus_restored": true
+                                })),
+                            };
+                            if let Ok(json_str) = serde_json::to_string(&bcast_evt) {
+                                let _ = self.event_tx.send(json_str);
+                            }
 
                             if target_hwnd != 0 {
                                 match self.arbiter.execute_text(target_hwnd, &text) {

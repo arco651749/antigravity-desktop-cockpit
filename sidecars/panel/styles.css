@@ -1,12 +1,16 @@
 :root {
-  --bg-base: #12131a;
-  --bg-card: #181924;
-  --bg-surface: #222536;
-  --border-color: #2e3247;
-  --accent-blue: #4285f4;
-  --accent-green: #34a853;
-  --accent-red: #ea4335;
-  --accent-yellow: #fbbc05;
+  --bg-base: #0a0c12;
+  --bg-deck-1: #131724;
+  --bg-deck-2: #0e111b;
+  --bg-surface: #1c2234;
+  --bg-surface-hover: #252d44;
+  --border-color: #262d42;
+  --border-subtle: #1e2436;
+  --accent-blue: #3b82f6;
+  --accent-cyan: #38bdf8;
+  --accent-green: #10b981;
+  --accent-rose: #f43f5e;
+  --accent-amber: #f59e0b;
   --text-main: #f1f5f9;
   --text-muted: #94a3b8;
 }
@@ -22,7 +26,7 @@ body {
   background: var(--bg-base);
   color: var(--text-main);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  font-size: 13px;
+  font-size: 12px;
   line-height: 1.4;
   height: 100vh;
   display: flex;
@@ -37,129 +41,315 @@ body {
   width: 100%;
 }
 
-/* Toolbar */
-.toolbar {
-  background: var(--bg-card);
-  border-bottom: 1px solid var(--border-color);
-  padding: 8px 12px;
+/* ==========================================================================
+   Dual-Track Command Deck (Scheme B)
+   ========================================================================== */
+
+.deck-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
   gap: 8px;
+  padding: 6px 10px;
   flex-wrap: wrap;
 }
 
-.tool-group {
+.deck-row-primary {
+  background: var(--bg-deck-1);
+  border-bottom: 1px solid var(--border-color);
+}
+
+.deck-row-telemetry {
+  background: var(--bg-deck-2);
+  border-bottom: 1px solid var(--border-subtle);
+  padding: 4px 10px;
+}
+
+.deck-group {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 6px;
+  flex-wrap: wrap;
 }
 
-select, button {
+.deck-divider {
+  width: 1px;
+  height: 16px;
+  background: var(--border-color);
+  margin: 0 2px;
+}
+
+.cockpit-badge {
+  background: rgba(59, 130, 246, 0.18);
+  color: #60a5fa;
+  border: 1px solid rgba(59, 130, 246, 0.35);
+  font-weight: 800;
+  font-size: 10.5px;
+  letter-spacing: 0.5px;
+  padding: 2px 6px;
+  border-radius: 5px;
+  white-space: nowrap;
+}
+
+/* Integrated Window Picker Box */
+.window-picker-box {
+  display: inline-flex;
+  align-items: center;
   background: var(--bg-surface);
-  color: var(--text-main);
   border: 1px solid var(--border-color);
-  padding: 5px 10px;
   border-radius: 6px;
+  padding: 1px 4px 1px 7px;
+  gap: 4px;
+  transition: border-color 0.15s;
+}
+.window-picker-box:hover {
+  border-color: var(--accent-blue);
+}
+.picker-icon {
+  font-size: 12px;
+}
+#windowSelect {
+  background: transparent;
+  border: none;
+  color: var(--text-main);
+  font-size: 12px;
+  font-weight: 500;
+  padding: 3px 4px;
+  max-width: 210px;
+  outline: none;
+  cursor: pointer;
+}
+#windowSelect option {
+  background: #161b2a;
+  color: var(--text-main);
+}
+
+.icon-btn {
+  background: var(--bg-surface);
+  color: var(--text-muted);
+  border: 1px solid var(--border-color);
+  border-radius: 5px;
+  padding: 3px 7px;
   font-size: 12px;
   cursor: pointer;
-  outline: none;
   transition: all 0.15s ease;
 }
-
-select:hover, button:hover {
+.icon-btn:hover {
+  color: #ffffff;
+  background: var(--bg-surface-hover);
   border-color: var(--accent-blue);
 }
+.window-picker-box .icon-btn {
+  border: none;
+  border-left: 1px solid var(--border-color);
+  border-radius: 0 4px 4px 0;
+  background: transparent;
+  padding: 2px 6px;
+}
 
-.btn-primary {
-  background: #1e3a8a;
-  border-color: var(--accent-blue);
+/* Segmented Controls */
+.segmented-group {
+  display: inline-flex;
+  align-items: center;
+  background: #0c0f18;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 2px;
+  gap: 2px;
+}
+
+.seg-btn {
+  background: transparent;
+  color: #cbd5e1;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  padding: 3px 8px;
+  font-size: 11.5px;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+.seg-btn:hover {
+  background: var(--bg-surface);
+  color: #ffffff;
+}
+.seg-btn-primary {
+  background: rgba(37, 99, 235, 0.22);
+  border-color: rgba(59, 130, 246, 0.45);
   color: #93c5fd;
   font-weight: 600;
 }
-.btn-primary:hover {
+.seg-btn-primary:hover {
   background: var(--accent-blue);
   color: #ffffff;
 }
 
-.btn-secondary {
-  background: #1e293b;
-  border-color: #334155;
-  color: #cbd5e1;
+.compact-select {
+  background: var(--bg-surface);
+  color: var(--text-main);
+  border: 1px solid var(--border-color);
+  padding: 3px 7px;
+  border-radius: 6px;
+  font-size: 11.5px;
+  cursor: pointer;
+  outline: none;
+  transition: border-color 0.15s;
 }
-.btn-secondary:hover {
-  background: #334155;
-  color: #ffffff;
+.compact-select:hover {
+  border-color: var(--accent-blue);
+}
+
+/* Status & Telemetry Pills (Track 2) */
+.status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px;
+  border-radius: 999px;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.status-guard {
+  background: rgba(16, 185, 129, 0.14);
+  color: #34d399;
+  border: 1px solid rgba(52, 211, 153, 0.35);
+}
+
+.status-human {
+  background: rgba(59, 130, 246, 0.18);
+  color: #60a5fa;
+  border: 1px solid rgba(96, 165, 250, 0.45);
+}
+
+.status-ai {
+  background: rgba(244, 63, 94, 0.18);
+  color: #fb7185;
+  border: 1px solid rgba(251, 113, 133, 0.45);
+}
+
+.status-idle {
+  background: rgba(148, 163, 184, 0.12);
+  color: #cbd5e1;
+  border: 1px solid rgba(203, 213, 225, 0.22);
 }
 
 .status-virtual {
   background: rgba(14, 165, 233, 0.15);
   color: #38bdf8;
-  border: 1px solid rgba(56, 189, 248, 0.3);
+  border: 1px solid rgba(56, 189, 248, 0.35);
 }
 
 .status-virtual-active {
-  background: rgba(16, 185, 129, 0.15);
+  background: rgba(16, 185, 129, 0.18);
   color: #34d399;
-  border: 1px solid rgba(52, 211, 153, 0.4);
-}
-
-/* Arbiter status banner */
-.arbiter-banner {
-  background: #0f172a;
-  border-bottom: 1px solid var(--border-color);
-  padding: 5px 12px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  font-size: 11px;
-}
-
-.status-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 2px 8px;
-  border-radius: 12px;
-  font-weight: 600;
-}
-
-.status-human {
-  background: rgba(52, 168, 83, 0.15);
-  color: #4ade80;
-  border: 1px solid rgba(74, 222, 128, 0.3);
-}
-
-.status-ai {
-  background: rgba(234, 67, 53, 0.15);
-  color: #f87171;
-  border: 1px solid rgba(248, 113, 113, 0.3);
-}
-
-.status-idle {
-  background: rgba(148, 163, 184, 0.15);
-  color: #cbd5e1;
-  border: 1px solid rgba(203, 213, 225, 0.2);
+  border: 1px solid rgba(52, 211, 153, 0.45);
 }
 
 .dot {
-  width: 7px;
-  height: 7px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
   background: currentColor;
 }
 
-/* Viewport area */
+.telemetry-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 8px;
+  border-radius: 6px;
+  font-family: "Cascadia Code", Consolas, monospace;
+  font-size: 11px;
+  white-space: nowrap;
+}
+
+.telemetry-ai {
+  background: rgba(244, 63, 94, 0.12);
+  color: #fda4af;
+  border: 1px solid rgba(244, 63, 94, 0.32);
+}
+
+.ai-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #f43f5e;
+  box-shadow: 0 0 6px #f43f5e;
+}
+
+.hud-stat {
+  font-size: 11px;
+  font-family: "Cascadia Code", Consolas, monospace;
+  color: #38bdf8;
+  background: rgba(15, 23, 42, 0.75);
+  border: 1px solid rgba(56, 189, 248, 0.25);
+  padding: 2px 8px;
+  border-radius: 5px;
+  letter-spacing: 0.2px;
+  white-space: nowrap;
+}
+
+/* Deck Action Buttons (Track 2 Right) */
+.deck-action-btn {
+  background: var(--bg-surface);
+  color: #e2e8f0;
+  border: 1px solid var(--border-color);
+  border-radius: 5px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all 0.15s ease;
+  white-space: nowrap;
+}
+.deck-action-btn:hover {
+  background: var(--bg-surface-hover);
+  border-color: var(--accent-blue);
+  color: #ffffff;
+}
+.btn-uia {
+  background: rgba(14, 165, 233, 0.14);
+  border-color: rgba(56, 189, 248, 0.35);
+  color: #7dd3fc;
+}
+.btn-ai-demo {
+  background: rgba(244, 63, 94, 0.15);
+  border-color: rgba(244, 63, 94, 0.4);
+  color: #fda4af;
+}
+.btn-ai-demo:hover {
+  background: rgba(244, 63, 94, 0.3);
+  border-color: #f43f5e;
+  color: #ffffff;
+}
+
+/* ==========================================================================
+   Streaming Viewport & Virtual AI Cursor Layer
+   ========================================================================== */
+
 .viewport-wrapper {
   position: relative;
   flex: 1;
-  background: #08090e;
+  background: radial-gradient(circle at center, #101420 0%, #07080d 100%);
   overflow: hidden;
   display: flex;
   align-items: center;
   justify-content: center;
   cursor: crosshair;
   outline: none;
+}
+
+.canvas-stage {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  max-width: 100%;
+  max-height: 100%;
+  box-shadow: 0 10px 35px rgba(0, 0, 0, 0.65);
 }
 
 #streamCanvas {
@@ -169,65 +359,68 @@ select:hover, button:hover {
   display: block;
 }
 
-/* HUD Stat in banner */
-.hud-stat {
-  font-size: 11px;
-  font-family: "Cascadia Code", Consolas, monospace;
-  color: #38bdf8;
-  background: rgba(15, 23, 42, 0.7);
-  border: 1px solid rgba(56, 189, 248, 0.25);
-  padding: 2px 8px;
-  border-radius: 4px;
-  letter-spacing: 0.3px;
-  user-select: none;
+/* 🎯 Precision Virtual Dot Pointer */
+.ai-virtual-cursor {
+  position: absolute;
+  z-index: 65;
+  pointer-events: none;
+  transform: translate(-50%, -50%);
+  transition: left 0.16s cubic-bezier(0.22, 1, 0.36, 1), top 0.16s cubic-bezier(0.22, 1, 0.36, 1);
+  will-change: left, top;
 }
 
-/* Bottom logs */
-.console-pane {
-  background: #11121b;
-  border-top: 1px solid var(--border-color);
-  padding: 6px 12px;
-  font-family: "Cascadia Code", Consolas, monospace;
-  font-size: 11px;
-  color: #94a3b8;
-  height: 80px;
-  overflow-y: auto;
+.ai-cursor-dot {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: #f43f5e;
+  border: 2px solid #ffffff;
+  box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.4), 0 0 10px rgba(244, 63, 94, 0.95), 0 2px 4px rgba(0, 0, 0, 0.5);
+  transition: transform 0.12s ease, background 0.12s ease;
+  position: relative;
 }
 
-.log-entry {
-  margin-bottom: 2px;
-  display: flex;
-  gap: 8px;
+.ai-virtual-cursor.clicking .ai-cursor-dot {
+  transform: scale(0.72);
+  background: #fb7185;
 }
-.log-time { color: #64748b; }
-.log-user { color: #4ade80; }
-.log-agent { color: #f87171; }
-.log-sys { color: #38bdf8; }
+
+.ai-cursor-badge {
+  display: none !important;
+}
+
+.ai-cursor-ripple-host {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
 
 /* Click Ripple Visual Feedback */
 .click-ripple {
   position: absolute;
-  width: 28px;
-  height: 28px;
+  width: 30px;
+  height: 30px;
   border-radius: 50%;
   pointer-events: none;
   transform: translate(-50%, -50%) scale(0.2);
-  animation: ripple-anim 0.5s cubic-bezier(0.1, 0.8, 0.3, 1) forwards;
+  animation: ripple-anim 0.55s cubic-bezier(0.16, 1, 0.3, 1) forwards;
   z-index: 100;
 }
 .ripple-user {
-  border: 2px solid #4ade80;
-  box-shadow: 0 0 14px rgba(74, 222, 128, 0.7);
-  background: rgba(74, 222, 128, 0.25);
+  border: 2px solid #38bdf8;
+  box-shadow: 0 0 14px rgba(56, 189, 248, 0.75);
+  background: rgba(56, 189, 248, 0.25);
 }
 .ripple-agent {
-  border: 2px solid #f87171;
-  box-shadow: 0 0 14px rgba(248, 113, 113, 0.7);
-  background: rgba(248, 113, 113, 0.25);
+  border: 2.5px solid #fb7185;
+  box-shadow: 0 0 16px rgba(244, 63, 94, 0.85);
+  background: rgba(244, 63, 94, 0.3);
 }
 @keyframes ripple-anim {
   0% { transform: translate(-50%, -50%) scale(0.2); opacity: 1; }
-  100% { transform: translate(-50%, -50%) scale(1.6); opacity: 0; }
+  100% { transform: translate(-50%, -50%) scale(1.85); opacity: 0; }
 }
 
 .pulse-highlight {
@@ -240,18 +433,49 @@ select:hover, button:hover {
 }
 
 /* ==========================================================================
+   Compact 2-Line Event Console
+   ========================================================================== */
+
+.console-pane {
+  background: #0c0e17;
+  border-top: 1px solid var(--border-color);
+  padding: 5px 10px;
+  font-family: "Cascadia Code", Consolas, monospace;
+  font-size: 11px;
+  color: #94a3b8;
+  height: 52px;
+  overflow-y: auto;
+}
+
+.log-entry {
+  margin-bottom: 2px;
+  display: flex;
+  gap: 6px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.log-time { color: #64748b; }
+.log-user { color: #38bdf8; }
+.log-agent { color: #fb7185; }
+.log-sys { color: #34d399; }
+
+/* ==========================================================================
    Desktop Cockpit Annotation & Visual Feedback Styles
    ========================================================================== */
 
-/* Annotation Trigger Button */
 .btn-annotate {
   background: linear-gradient(135deg, #ea580c, #c2410c);
   color: #fff;
   border: 1px solid #f97316;
+  border-radius: 6px;
+  padding: 3px 9px;
+  font-size: 11.5px;
   font-weight: 700;
+  cursor: pointer;
   display: inline-flex;
   align-items: center;
-  gap: 5px;
+  gap: 4px;
   box-shadow: 0 2px 6px rgba(234, 88, 12, 0.35);
 }
 .btn-annotate:hover {
@@ -264,16 +488,6 @@ select:hover, button:hover {
   box-shadow: 0 0 12px rgba(34, 197, 94, 0.6) !important;
 }
 
-/* Canvas Stage & Overlay */
-.canvas-stage {
-  position: relative;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  max-width: 100%;
-}
-
-/* Ensure hidden elements are strictly hidden regardless of other styles */
 [hidden],
 .annotation-canvas[hidden],
 .cockpit-annot-dock[hidden],
@@ -296,15 +510,13 @@ select:hover, button:hover {
   display: block;
 }
 
-/* Bottom Docked Annotation Toolbar (Replaces Log Area during annotation) */
 .cockpit-annot-dock {
   background: #11121b;
   border-top: 1px solid rgba(66, 133, 244, 0.55);
   box-shadow: 0 -4px 20px rgba(0, 0, 0, 0.45);
-  min-height: 80px;
-  max-height: 80px;
-  height: 80px;
-  padding: 8px 14px;
+  min-height: 60px;
+  max-height: 68px;
+  padding: 6px 12px;
   align-items: center;
   justify-content: center;
   gap: 8px;
@@ -316,13 +528,6 @@ select:hover, button:hover {
 }
 .cockpit-annot-dock:not([hidden]) {
   display: flex;
-}
-.cockpit-annot-dock[hidden] {
-  display: none !important;
-}
-
-.console-pane[hidden] {
-  display: none !important;
 }
 
 @keyframes annotDockFadeIn {
@@ -348,17 +553,15 @@ select:hover, button:hover {
   border: 1px solid transparent;
   border-radius: 4px;
   padding: 4px 6px;
-  font-size: 14px;
+  font-size: 12px;
   cursor: pointer;
   line-height: 1;
   transition: all 0.15s;
   color: var(--text-main);
 }
-
 .annot-btn:hover {
   background: var(--bg-surface);
 }
-
 .annot-btn.active {
   background: rgba(66, 133, 244, 0.25);
   border-color: var(--accent-blue);
@@ -379,11 +582,9 @@ select:hover, button:hover {
   border: 2px solid transparent;
   transition: transform 0.15s, border-color 0.15s;
 }
-
 .color-dot:hover {
   transform: scale(1.15);
 }
-
 .color-dot.active {
   border-color: #ffffff;
   transform: scale(1.25);
@@ -400,12 +601,10 @@ select:hover, button:hover {
   cursor: pointer;
   transition: all 0.15s;
 }
-
 .size-btn:hover {
   color: var(--text-main);
   background: var(--bg-surface);
 }
-
 .size-btn.active {
   color: #ffffff;
   background: var(--accent-blue);
@@ -423,12 +622,10 @@ select:hover, button:hover {
   transition: all 0.15s;
   white-space: nowrap;
 }
-
 .annot-action-btn:hover {
   background: rgba(255, 255, 255, 0.1);
   border-color: var(--text-muted);
 }
-
 .annot-action-btn.btn-primary {
   background: #1e3a8a;
   border-color: var(--accent-blue);
@@ -439,7 +636,6 @@ select:hover, button:hover {
   background: var(--accent-blue);
   color: #fff;
 }
-
 .annot-action-btn.btn-danger {
   background: rgba(234, 67, 53, 0.15);
   border-color: rgba(234, 67, 53, 0.4);
@@ -450,7 +646,6 @@ select:hover, button:hover {
   color: #fff;
 }
 
-/* Toast Message */
 .cockpit-toast {
   position: absolute;
   bottom: 20px;
@@ -476,7 +671,6 @@ select:hover, button:hover {
   to { opacity: 1; transform: translate(-50%, 0); }
 }
 
-/* Ask Agent Popover */
 .annot-send-popover {
   position: fixed;
   top: 0;
@@ -496,7 +690,7 @@ select:hover, button:hover {
 }
 
 .annot-send-popover .popover-content {
-  background: var(--bg-card);
+  background: var(--bg-deck-1);
   border: 1px solid var(--border-color);
   box-shadow: 0 16px 40px rgba(0, 0, 0, 0.7);
   border-radius: 10px;
@@ -550,4 +744,3 @@ select:hover, button:hover {
   justify-content: flex-end;
   gap: 8px;
 }
-

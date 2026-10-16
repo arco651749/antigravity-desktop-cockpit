@@ -3,93 +3,102 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Desktop Cockpit</title>
+  <title>Desktop Cockpit 3.0</title>
   <link rel="stylesheet" href="/styles.css">
   <script src="/preload.js"></script>
 </head>
 <body>
   <div class="cockpit-app">
-    <!-- Top HUD Toolbar -->
-    <div class="toolbar">
-      <div class="tool-group">
-        <span style="font-weight: 700; color: #fff;">🖥️ 視窗:</span>
-        <select id="windowSelect">
-          <option value="">載入視窗中...</option>
-        </select>
-        <button id="btnRefresh" title="重新列舉視窗">🔄 刷新</button>
-      </div>
+    <!-- ==================== TRACK 1: PRIMARY COMMAND BAR ==================== -->
+    <div class="deck-row deck-row-primary">
+      <!-- Left: Brand Badge + Window Selector + Virtual Screen Segmented Controls -->
+      <div class="deck-group">
+        <span class="cockpit-badge" title="Antigravity Desktop Cockpit 3.0 — 雙游標零干擾駕駛艙">COCKPIT 3.0</span>
+        <div class="window-picker-box">
+          <span class="picker-icon">🖥️</span>
+          <select id="windowSelect" title="選擇欲監控或派駐的目標桌面視窗">
+            <option value="">載入視窗中...</option>
+          </select>
+          <button id="btnRefresh" class="icon-btn" title="重新列舉活動視窗">↻</button>
+        </div>
 
-      <div class="tool-group">
-        <div id="virtualMonStatus" class="status-pill status-idle" style="font-size: 11px;" title="虛擬顯示器驅動硬體狀態">
+        <div class="deck-divider"></div>
+
+        <!-- Screen Topology & Dispatch Controls -->
+        <div id="virtualMonStatus" class="status-pill status-idle" title="點擊切換虛擬第二螢幕硬體狀態 (0 批次檔、0 UAC)">
           <span class="dot"></span>
           <span id="virtualMonText">虛擬螢幕: 檢測中</span>
         </div>
-        <button id="btnToggleDisplay" class="btn-secondary" title="程式化開關虛擬螢幕硬體 (免 UAC / 免批次檔)">🔌 開關螢幕</button>
-        <button id="btnDispatchVirtual" class="btn-primary" title="將當前視窗派駐至虛擬第二螢幕，徹底隔離防止覆蓋 Antigravity IDE">🚀 派駐虛擬螢幕</button>
-        <button id="btnRestorePrimary" class="btn-secondary" title="將視窗移回主實體螢幕">⬅️ 移回主螢幕</button>
-      </div>
-
-      <div class="tool-group" style="background: rgba(37, 99, 235, 0.15); border: 1px solid rgba(59, 130, 246, 0.4); border-radius: 6px; padding: 4px 8px;">
-        <span style="font-weight: 700; color: #60a5fa;">🧠 語意感知:</span>
-        <button id="btnScanUIA" class="btn-primary" title="掃描當前目標視窗之 UIA 語意樹與控制項">🌳 UIA 樹</button>
-        <button id="btnDiff" class="btn-secondary" title="比對 Visual Memory 快照 (偵測新彈窗與狀態差異)">📊 差異偵測</button>
-      </div>
-
-      <div class="tool-group">
-        <span style="color: #60a5fa; font-weight: 600; font-size: 11px;">模式:</span>
-        <select id="modeSelect" title="切換直通模式或背景模式">
-          <option value="direct" selected>⚡ 直通模式 (DXGI / SendInput)</option>
-          <option value="background">🌿 背景模式 (PrintWindow)</option>
-        </select>
-      </div>
-
-      <div class="tool-group">
-        <span style="color: var(--text-muted); font-size: 11px;">幀率:</span>
-        <select id="fpsSelect">
-          <option value="60">⚡ 60 FPS</option>
-          <option value="30" selected>🌿 30 FPS</option>
-          <option value="15">🍃 15 FPS</option>
-          <option value="5">💤 5 FPS</option>
-        </select>
-        <button id="btnEngineRestart" title="重啟底層串流引擎">⚡ 重啟</button>
-      </div>
-
-      <div class="tool-group">
-        <button id="btnAnnotateToggle" class="btn-annotate" title="定格畫面並開啟畫筆標註 (快速鍵: Ctrl+Shift+A)">📸 截圖標註</button>
-      </div>
-    </div>
-
-    <!-- Arbiter Status Banner -->
-    <div class="arbiter-banner">
-      <div style="display: flex; align-items: center; gap: 8px;">
-        <span>控制權:</span>
-        <div id="arbiterStatus" class="status-pill status-idle">
-          <span class="dot"></span>
-          <span id="arbiterText">待機 (隨時接受人類或 AI 操作)</span>
+        <div class="segmented-group">
+          <button id="btnDispatchVirtual" class="seg-btn seg-btn-primary" title="將目標視窗派駐至虛擬第二螢幕，徹底隔離不擋主畫面">🚀 派駐虛擬艙</button>
+          <button id="btnRestorePrimary" class="seg-btn" title="將目標視窗移回主實體螢幕">🏠 移回主畫面</button>
+          <button id="btnToggleDisplay" class="seg-btn" title="程式化插拔虛擬顯示器硬體 (Win32 IOCTL)">🔌</button>
         </div>
       </div>
-      <div class="hud-stat" id="hudStat">
-        FPS: 30 | 模式: DIRECT | 座標: (0.000, 0.000)
+
+      <!-- Right: Mode, FPS, Engine Restart & Annotation Trigger -->
+      <div class="deck-group">
+        <select id="modeSelect" class="compact-select" title="切換直通原子借還模式或純背景模式">
+          <option value="direct" selected>⚡ 直通 + 焦點自動歸還</option>
+          <option value="background">🌿 純背景 (PostMessage)</option>
+        </select>
+
+        <select id="fpsSelect" class="compact-select" title="動態串流目標幀率">
+          <option value="60">60 FPS</option>
+          <option value="30" selected>30 FPS</option>
+          <option value="15">15 FPS</option>
+          <option value="5">5 FPS</option>
+        </select>
+
+        <button id="btnEngineRestart" class="icon-btn" title="重啟底層 Rust 串流引擎">⚡</button>
+        <button id="btnAnnotateToggle" class="btn-annotate" title="定格畫面並開啟畫筆標註 (快捷鍵: Ctrl+Shift+A)">📸 截圖標註</button>
       </div>
     </div>
 
-    <!-- Streaming Canvas Viewport -->
+    <!-- ==================== TRACK 2: DUAL-CURSOR & TELEMETRY DECK ==================== -->
+    <div class="deck-row deck-row-telemetry">
+      <!-- Left: Focus Guard Status + User Cursor Stat -->
+      <div class="deck-group">
+        <div id="arbiterStatus" class="status-pill status-guard" title="操作完畢後自動將實體滑鼠與鍵盤焦點歸還主畫面">
+          <span class="dot"></span>
+          <span id="arbiterText">🛡️ 主畫面焦點保護中</span>
+        </div>
+
+        <div class="hud-stat" id="hudStat" title="串流即時幀率與畫布歸一化座標">
+          FPS: 30 | 游標: (0.000, 0.000)
+        </div>
+      </div>
+
+      <!-- Right: Semantic UIA & Visual Diff -->
+      <div class="deck-group">
+        <button id="btnScanUIA" class="deck-action-btn btn-uia" title="掃描當前目標視窗之 Windows UIA 語意樹">🌳 UIA 樹</button>
+        <button id="btnDiff" class="deck-action-btn" title="比對 Visual Memory 快照 (偵測新彈窗與對話框)">📊 差異偵測</button>
+      </div>
+    </div>
+
+    <!-- ==================== STREAMING CANVAS VIEWPORT ==================== -->
     <div class="viewport-wrapper" id="viewport" tabindex="0">
       <div class="canvas-stage" id="canvasStage">
         <canvas id="streamCanvas"></canvas>
         <canvas id="annotationCanvas" class="annotation-canvas" hidden></canvas>
+
+        <!-- 🎯 Precision Virtual Dot Pointer (Centered dot, zero text clutter) -->
+        <div id="aiVirtualCursor" class="ai-virtual-cursor" style="left: 50%; top: 50%;">
+          <div id="aiCursorRippleHost" class="ai-cursor-ripple-host"></div>
+          <div class="ai-cursor-dot"></div>
+        </div>
       </div>
     </div>
 
-    <!-- Live Event Console (Default) -->
+    <!-- ==================== COMPACT 2-LINE EVENT CONSOLE ==================== -->
     <div class="console-pane" id="consoleLogs">
       <div class="log-entry">
         <span class="log-time">[系統]</span>
-        <span class="log-sys">Antigravity Desktop Cockpit 駕駛艙初始化中...</span>
+        <span class="log-sys">Antigravity Desktop Cockpit 3.0 雙軌指揮台已就緒 (虛擬 AI 游標 + 主畫面焦點自動歸還已啟用)</span>
       </div>
     </div>
 
-    <!-- Bottom Docked Annotation Toolbar (Replaces logs during screenshot annotation) -->
+    <!-- ==================== BOTTOM DOCKED ANNOTATION TOOLBAR ==================== -->
     <div id="annotToolbar" class="cockpit-annot-dock" hidden>
       <div class="annot-tool-group">
         <button class="annot-btn active" data-tool="pen" title="畫筆 (Freehand)">✏️ 畫筆</button>

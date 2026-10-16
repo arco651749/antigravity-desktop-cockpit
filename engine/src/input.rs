@@ -1,5 +1,5 @@
 use std::mem::size_of;
-use std::sync::atomic::{AtomicIsize, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicIsize, AtomicU64, Ordering};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use windows::Win32::Foundation::{BOOL, HWND, LPARAM, POINT, RECT, WPARAM};
 use windows::Win32::System::StationsAndDesktops::{GetThreadDesktop, SetThreadDesktop};
@@ -58,11 +58,17 @@ extern "system" {
     fn IsWindowVisible(hwnd: HWND) -> BOOL;
     fn SetCursorPos(x: i32, y: i32) -> BOOL;
     fn GetCursorPos(lppoint: *mut POINT) -> BOOL;
+    fn GetForegroundWindow() -> HWND;
+    fn AttachThreadInput(idattach: u32, idattachto: u32, fattach: BOOL) -> BOOL;
 }
 
 pub struct InputArbiter {
     last_user_input_ms: AtomicU64,
     last_clicked_child: AtomicIsize,
+    saved_host_cursor: std::sync::Mutex<Option<POINT>>,
+    saved_host_foreground: AtomicIsize,
+    pub is_borrowing_cursor: AtomicBool,
+    pub ai_cursor: std::sync::Mutex<(f64, f64)>,
 }
 
 impl InputArbiter {
@@ -70,6 +76,112 @@ impl InputArbiter {
         Self {
             last_user_input_ms: AtomicU64::new(0),
             last_clicked_child: AtomicIsize::new(0),
+            saved_host_cursor: std::sync::Mutex::new(None),
+            saved_host_foreground: AtomicIsize::new(0),
+            is_borrowing_cursor: AtomicBool::new(false),
+            ai_cursor: std::sync::Mutex::new((0.5, 0.5)),
+        }
+    }
+
+    /// 主螢幕邊界空氣牆 (Primary Screen Cursor Fence)：
+    /// 當虛擬第二螢幕開啟時，使用者實體桌面並沒有那台螢幕；若實體滑鼠游標意外滑過主螢幕右緣 (x >= primary_w)
+    /// 且目前並非處於 12ms 原子點擊借用瞬間，立即將實體滑鼠游標攔截回主螢幕邊緣內，徹底杜絕「滑鼠卡進虛擬螢幕出不來」！
+    pub fn enforce_primary_cursor_fence(&self) {
+        if self.is_borrowing_cursor.load(Ordering::SeqCst) {
+            return;
+        }
+        unsafe {
+            let primary_w = GetSystemMetrics(SM_CXSCREEN).max(1280);
+            let primary_h = GetSystemMetrics(SM_CYSCREEN).max(720);
+            let mut cur = POINT::default();
+            if GetCursorPos(&mut cur).as_bool() {
+                if cur.x >= primary_w || cur.x < 0 || cur.y >= primary_h || cur.y < 0 {
+                    let saved_pt = self.saved_host_cursor.lock().ok().and_then(|g| *g);
+                    if let Some(pt) = saved_pt {
+                        if pt.x >= 0 && pt.x < primary_w && pt.y >= 0 && pt.y < primary_h {
+                            let _ = SetCursorPos(pt.x, pt.y);
+                            return;
+                        }
+                    }
+                    let clamped_x = cur.x.clamp(0, primary_w - 2);
+                    let clamped_y = cur.y.clamp(0, primary_h - 2);
+                    let _ = SetCursorPos(clamped_x, clamped_y);
+                } else {
+                    // 隨時記憶使用者在主螢幕上的最新合法游標座標
+                    if let Ok(mut guard) = self.saved_host_cursor.lock() {
+                        *guard = Some(cur);
+                    }
+                }
+            }
+        }
+    }
+
+    /// 在動用系統游標或切換焦點前，安全記錄使用者在「主螢幕」上的真實滑鼠位置與原焦點視窗
+    pub unsafe fn snapshot_primary_state(&self, target_hwnd: HWND) {
+        use windows::Win32::UI::WindowsAndMessaging::{GetAncestor, GA_ROOT};
+        self.is_borrowing_cursor.store(true, Ordering::SeqCst);
+        let primary_w = GetSystemMetrics(SM_CXSCREEN).max(1280);
+        let primary_h = GetSystemMetrics(SM_CYSCREEN).max(720);
+
+        let mut pt = POINT::default();
+        if GetCursorPos(&mut pt).as_bool() {
+            // 僅當目前游標確實位於主螢幕內時才記錄，絕不被虛擬螢幕座標覆蓋！
+            if pt.x >= 0 && pt.x < primary_w && pt.y >= 0 && pt.y < primary_h {
+                if let Ok(mut guard) = self.saved_host_cursor.lock() {
+                    *guard = Some(pt);
+                }
+            }
+        }
+
+        let fg = GetForegroundWindow();
+        if !fg.0.is_null() {
+            let fg_root = GetAncestor(fg, GA_ROOT);
+            let target_root = GetAncestor(target_hwnd, GA_ROOT);
+            // 僅當目前前景視窗不是虛擬螢幕上的受控目標視窗時，才記為應歸還的主畫面焦點視窗
+            if fg != target_hwnd && fg_root != target_root && !crate::capture::WindowCapturer::is_window_on_virtual_display(fg.0 as isize) {
+                self.saved_host_foreground.store(fg.0 as isize, Ordering::SeqCst);
+            }
+        }
+    }
+
+    /// 僅歸還實體滑鼠游標至主螢幕原位（用於 down / move 瞬時投遞後，避免實體游標滯留於虛擬螢幕）
+    pub unsafe fn restore_primary_cursor_only(&self) {
+        let primary_w = GetSystemMetrics(SM_CXSCREEN).max(1280);
+        let primary_h = GetSystemMetrics(SM_CYSCREEN).max(720);
+        let saved_pt = self.saved_host_cursor.lock().ok().and_then(|g| *g);
+        if let Some(pt) = saved_pt {
+            let _ = SetCursorPos(pt.x, pt.y);
+        } else {
+            let mut cur = POINT::default();
+            if GetCursorPos(&mut cur).as_bool() {
+                if cur.x < 0 || cur.x >= primary_w || cur.y < 0 || cur.y >= primary_h {
+                    let _ = SetCursorPos(primary_w / 2, primary_h / 2);
+                }
+            }
+        }
+        self.is_borrowing_cursor.store(false, Ordering::SeqCst);
+    }
+
+    /// 動作完成後，將實體滑鼠游標與鍵盤焦點無縫歸還回主螢幕原本的位置與視窗
+    pub unsafe fn restore_primary_state(&self, target_hwnd: HWND) {
+        self.restore_primary_cursor_only();
+
+        // 2. 歸還鍵盤焦點至主螢幕原本使用的視窗 (如 Antigravity IDE)
+        let saved_fg = self.saved_host_foreground.load(Ordering::SeqCst);
+        if saved_fg != 0 && saved_fg != target_hwnd.0 as isize {
+            let fg_hwnd = HWND(saved_fg as *mut _);
+            let cur_fg = GetForegroundWindow();
+            if cur_fg != fg_hwnd {
+                let cur_tid = GetWindowThreadProcessId(cur_fg, None);
+                let dst_tid = GetWindowThreadProcessId(fg_hwnd, None);
+                if cur_tid != 0 && dst_tid != 0 && cur_tid != dst_tid {
+                    let _ = AttachThreadInput(cur_tid, dst_tid, BOOL(1));
+                    let _ = SetForegroundWindow(fg_hwnd);
+                    let _ = AttachThreadInput(cur_tid, dst_tid, BOOL(0));
+                } else {
+                    let _ = SetForegroundWindow(fg_hwnd);
+                }
+            }
         }
     }
 
@@ -179,6 +291,27 @@ impl InputArbiter {
             let sub_x = client_pt.x;
             let sub_y = client_pt.y;
             let l_param = LPARAM(((sub_y as u16 as isize) << 16) | (sub_x as u16 as isize));
+
+            if let Ok(mut guard) = self.ai_cursor.lock() {
+                *guard = (u.clamp(0.0, 1.0), v.clamp(0.0, 1.0));
+            }
+
+            if action == "click" {
+                let _ = PostMessageW(hwnd, 0x0006 /* WM_ACTIVATE */, WPARAM(1 /* WA_ACTIVE */), LPARAM(0));
+                let _ = PostMessageW(target_child, WM_SETFOCUS, WPARAM(0), LPARAM(0));
+                let (wm_down, wm_up, mk) = match button {
+                    "right" => (WM_RBUTTONDOWN, WM_RBUTTONUP, WPARAM(MK_RBUTTON)),
+                    "middle" => (WM_MBUTTONDOWN, WM_MBUTTONUP, WPARAM(MK_MBUTTON)),
+                    _ => (WM_LBUTTONDOWN, WM_LBUTTONUP, WPARAM(MK_LBUTTON)),
+                };
+                let _ = PostMessageW(target_child, wm_down, mk, l_param);
+                std::thread::sleep(Duration::from_millis(10));
+                let _ = PostMessageW(target_child, wm_up, WPARAM(0), l_param);
+                return Ok(format!(
+                    "背景原子點擊成功: HWND=0x{:X}, btn={}, x={}, y={}",
+                    target_child.0 as usize, button, sub_x, sub_y
+                ));
+            }
 
             let (wm_msg, w_param) = match action {
                 "down" => {
@@ -329,8 +462,8 @@ impl InputArbiter {
         }
     }
 
-    /// 直通模式 (Direct Mode - 參考 RustDesk 實作)
-    /// 透過 Windows 原生 SendInput API 進行核心級輸入直通，相容 WinUI 3 XAML、選單、分頁等所有應用
+    /// 直通模式 (Direct Mode - 支援虛擬 AI 游標與原子級游標/焦點借還)
+    /// 透過 Windows 原生 SendInput API 進行核心級輸入直通，操作完畢即刻將實體游標與鍵盤焦點歸還主螢幕
     pub fn execute_mouse_direct(
         &self,
         hwnd_val: isize,
@@ -347,6 +480,19 @@ impl InputArbiter {
             self.record_user_activity();
         } else if !self.can_agent_act(1500) {
             return Err("PAUSED_BY_USER: 人類正在操作中，AI 動作已禮讓暫停 1.5 秒".into());
+        }
+
+        // 更新內部 AI 虛擬游標座標
+        if let Ok(mut guard) = self.ai_cursor.lock() {
+            *guard = (u.clamp(0.0, 1.0), v.clamp(0.0, 1.0));
+        }
+
+        // 若為 AI 發出的純移動 (move)，僅移動畫布上的「🤖 虛擬 AI 游標」，完全不動實體滑鼠與焦點！
+        if action == "move" && !is_user {
+            return Ok(format!(
+                "AI 虛擬游標移動至 ({:.4}, {:.4}) [主畫面實體滑鼠 0 位移]",
+                u, v
+            ));
         }
 
         unsafe {
@@ -369,11 +515,10 @@ impl InputArbiter {
             let norm_x = (((screen_x - vx) * 65535) / vw) as i32;
             let norm_y = (((screen_y - vy) * 65535) / vh) as i32;
 
-            // 記錄當前物理游標位置 (儲存使用者在實體主螢幕的滑鼠座標)
-            let mut host_cursor = POINT::default();
-            let has_host_cursor = GetCursorPos(&mut host_cursor).as_bool();
+            // 動作開始前，安全快照主螢幕上的真實游標座標與原前景視窗 (絕不被虛擬螢幕座標覆蓋)
+            self.snapshot_primary_state(hwnd);
 
-            // 點擊前激活目標視窗並同步系統物理游標至目標點 (確保 WinUI 3 與標準控制項雙重捕獲)
+            // 激活目標視窗並同步系統游標至目標點
             let _ = SetForegroundWindow(hwnd);
             let _ = SetCursorPos(screen_x, screen_y);
 
@@ -383,11 +528,67 @@ impl InputArbiter {
                 _ => (MOUSEEVENTF_LEFTDOWN, MOUSEEVENTF_LEFTUP),
             };
 
+            if action == "click" {
+                // 原子級瞬移點擊：單一流程內完成 Move+Down -> 12ms -> Up -> 12ms -> 無縫歸還主螢幕滑鼠與鍵盤焦點
+                let down_inputs = [
+                    INPUT {
+                        r#type: INPUT_MOUSE,
+                        Anonymous: INPUT_0 {
+                            mi: MOUSEINPUT {
+                                dx: norm_x,
+                                dy: norm_y,
+                                mouseData: 0,
+                                dwFlags: MOUSEEVENTF_MOVE | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK,
+                                time: 0,
+                                dwExtraInfo: 0,
+                            },
+                        },
+                    },
+                    INPUT {
+                        r#type: INPUT_MOUSE,
+                        Anonymous: INPUT_0 {
+                            mi: MOUSEINPUT {
+                                dx: norm_x,
+                                dy: norm_y,
+                                mouseData: 0,
+                                dwFlags: dw_down,
+                                time: 0,
+                                dwExtraInfo: 0,
+                            },
+                        },
+                    },
+                ];
+                SendInput(&down_inputs, size_of::<INPUT>() as i32);
+                std::thread::sleep(Duration::from_millis(12));
+
+                let up_inputs = [INPUT {
+                    r#type: INPUT_MOUSE,
+                    Anonymous: INPUT_0 {
+                        mi: MOUSEINPUT {
+                            dx: norm_x,
+                            dy: norm_y,
+                            mouseData: 0,
+                            dwFlags: dw_up | MOUSEEVENTF_ABSOLUTE | MOUSEEVENTF_VIRTUALDESK,
+                            time: 0,
+                            dwExtraInfo: 0,
+                        },
+                    },
+                }];
+                SendInput(&up_inputs, size_of::<INPUT>() as i32);
+                std::thread::sleep(Duration::from_millis(12));
+
+                self.restore_primary_state(hwnd);
+
+                return Ok(format!(
+                    "原子直通點擊完成並已歸還主畫面滑鼠/焦點: HWND=0x{:X}, btn={}, x={}, y={}",
+                    hwnd.0 as usize, button, screen_x, screen_y
+                ));
+            }
+
             let mut inputs = Vec::new();
 
             match action {
                 "down" => {
-                    // 移動至座標並按下
                     inputs.push(INPUT {
                         r#type: INPUT_MOUSE,
                         Anonymous: INPUT_0 {
@@ -467,18 +668,13 @@ impl InputArbiter {
                 SendInput(&inputs, size_of::<INPUT>() as i32);
             }
 
-            // 核心修復：游標復位時機
-            // 1. 若為按下 (down) 或移動 (move)，游標應維持在目標視窗內，讓 Chromium / WinUI 3 / 3D 軟體完整捕獲點擊
-            // 2. 僅在釋放 (up) 或滾輪 (wheel) 時，給予 15ms 讓目標應用訊息迴圈消化完畢後，才將物理游標無縫復位回主螢幕
-            if (action == "up" || action == "wheel") && has_host_cursor {
-                std::thread::sleep(Duration::from_millis(15));
-                let primary_w = GetSystemMetrics(SM_CXSCREEN);
-                let primary_h = GetSystemMetrics(SM_CYSCREEN);
-                if host_cursor.x >= 0 && host_cursor.x < primary_w && host_cursor.y >= 0 && host_cursor.y < primary_h {
-                    let _ = SetCursorPos(host_cursor.x, host_cursor.y);
-                } else {
-                    let _ = SetCursorPos(primary_w / 2, primary_h / 2);
-                }
+            // 無論是 down / move / up / wheel，等待 10ms 讓目標應用訊息迴圈接收後，
+            // 100% 將實體滑鼠游標歸還至主螢幕原位置，徹底杜絕實體游標滯留或卡死在虛擬螢幕！
+            std::thread::sleep(Duration::from_millis(10));
+            if action == "up" || action == "wheel" || !is_user {
+                self.restore_primary_state(hwnd);
+            } else {
+                self.restore_primary_cursor_only();
             }
 
             Ok(format!(
@@ -488,7 +684,7 @@ impl InputArbiter {
         }
     }
 
-    /// 直通模式按鍵 (Direct Key Mode)
+    /// 直通模式按鍵 (Direct Key Mode - 支援主畫面焦點快照與歸還)
     pub fn execute_key_direct(
         &self,
         hwnd_val: isize,
@@ -510,6 +706,7 @@ impl InputArbiter {
 
         unsafe {
             let hwnd = HWND(hwnd_val as *mut _);
+            self.snapshot_primary_state(hwnd);
             let _ = SetForegroundWindow(hwnd);
             let is_up = action.eq_ignore_ascii_case("up");
 
@@ -518,7 +715,7 @@ impl InputArbiter {
                 let scan = MapVirtualKeyW(vk as u32, MAPVK_VK_TO_VSC) as u16;
                 let is_extended = match vk {
                     33..=46 | 91..=93 | 111 | 144 | 163 | 165 => true, // PageUp/Down, Home, End, Arrows, Delete, Win 等
-                    _ => (scan >> 8 == 0xE0 || scan >> 8 == 0xE1),
+                    _ => scan >> 8 == 0xE0 || scan >> 8 == 0xE1,
                 };
                 let mut flags = KEYBD_EVENT_FLAGS::default();
                 if is_extended {
@@ -543,7 +740,6 @@ impl InputArbiter {
 
             let mut inputs = Vec::new();
 
-            // 若非單獨按下修飾鍵本體，但在按下主鍵時檢測到組合鍵狀態，先確保修飾鍵在 Windows 佇列中處於按下狀態
             if !is_up {
                 if ctrl && vk_code != 17 {
                     inputs.push(make_hardware_key(0x11, false)); // VK_CONTROL
@@ -551,13 +747,12 @@ impl InputArbiter {
                 if alt && vk_code != 18 {
                     inputs.push(make_hardware_key(0x12, false)); // VK_MENU (Alt)
                 }
-                // 注意：若已有直接的 unicode_char (如 'A', '!'), 無需額外壓住 Shift，避免 Windows 產生二次修飾
                 if shift && vk_code != 16 && unicode_char.is_none() {
                     inputs.push(make_hardware_key(0x10, false)); // VK_SHIFT
                 }
             }
 
-            if let Some(ch) = unicode_char {
+            if let Some(ch) = unicode_char.filter(|_| !ctrl && !alt) {
                 inputs.push(INPUT {
                     r#type: INPUT_KEYBOARD,
                     Anonymous: INPUT_0 {
@@ -574,7 +769,6 @@ impl InputArbiter {
                 inputs.push(make_hardware_key(vk_code, is_up));
             }
 
-            // 釋放主要按鍵時，一併釋放對應的合成修飾鍵狀態，防呆避免卡鍵
             if is_up {
                 if ctrl && vk_code != 17 {
                     inputs.push(make_hardware_key(0x11, true)); // VK_CONTROL
@@ -589,6 +783,14 @@ impl InputArbiter {
 
             if !inputs.is_empty() {
                 SendInput(&inputs, size_of::<INPUT>() as i32);
+            }
+
+            // 當 AI 按鍵釋放 (up) 時，等待 12ms 讓目標訊息迴圈消化快捷鍵，隨即將滑鼠與鍵盤焦點歸還回主畫面視窗
+            if is_up && !is_user && vk_code != 16 && vk_code != 17 && vk_code != 18 {
+                std::thread::sleep(Duration::from_millis(12));
+                self.restore_primary_state(hwnd);
+            } else {
+                self.restore_primary_cursor_only();
             }
 
             Ok(format!(

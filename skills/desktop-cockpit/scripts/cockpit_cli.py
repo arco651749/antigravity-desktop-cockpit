@@ -221,6 +221,40 @@ VK_MAP = {
     "pagedown": 34,
 }
 
+def get_clipboard_text():
+    user32 = ctypes.windll.user32
+    kernel32 = ctypes.windll.kernel32
+    user32.OpenClipboard.argtypes = [wintypes.HWND]
+    user32.OpenClipboard.restype = wintypes.BOOL
+    user32.CloseClipboard.restype = wintypes.BOOL
+    user32.GetClipboardData.argtypes = [wintypes.UINT]
+    user32.GetClipboardData.restype = wintypes.HANDLE
+    kernel32.GlobalLock.argtypes = [wintypes.HGLOBAL]
+    kernel32.GlobalLock.restype = ctypes.c_void_p
+    kernel32.GlobalUnlock.argtypes = [wintypes.HGLOBAL]
+    kernel32.GlobalUnlock.restype = wintypes.BOOL
+
+    CF_UNICODETEXT = 13
+    for _ in range(5):
+        if user32.OpenClipboard(None):
+            break
+        time.sleep(0.03)
+    else:
+        return None
+    try:
+        h_mem = user32.GetClipboardData(CF_UNICODETEXT)
+        if not h_mem:
+            return None
+        ptr = kernel32.GlobalLock(h_mem)
+        if not ptr:
+            return None
+        try:
+            return ctypes.wstring_at(ptr)
+        finally:
+            kernel32.GlobalUnlock(h_mem)
+    finally:
+        user32.CloseClipboard()
+
 def set_clipboard_text(text: str) -> bool:
     user32 = ctypes.windll.user32
     kernel32 = ctypes.windll.kernel32
@@ -449,37 +483,19 @@ def main():
 
         async def exec_hotkey():
             import websockets
+            send_char = None if (ctrl or alt) else char
             async with websockets.connect(WS_URL) as ws:
-                # 依序按下實體修飾鍵 (VK_CONTROL=17, VK_MENU=18, VK_SHIFT=16)
-                if ctrl:
-                    await ws.send(json.dumps({"action": "key", "source": "agent", "mode": "direct", "subaction": "down", "vk": 17}))
-                    await asyncio.sleep(0.02)
-                if alt:
-                    await ws.send(json.dumps({"action": "key", "source": "agent", "mode": "direct", "subaction": "down", "vk": 18}))
-                    await asyncio.sleep(0.02)
-                if shift:
-                    await ws.send(json.dumps({"action": "key", "source": "agent", "mode": "direct", "subaction": "down", "vk": 16}))
-                    await asyncio.sleep(0.02)
-
-                # 按下與釋放主按鍵
+                # execute_key_direct 已內建修飾鍵 (Ctrl/Alt/Shift) 原子按壓與釋放及主畫面焦點歸還
                 await ws.send(json.dumps({
                     "action": "key", "source": "agent", "mode": "direct", "subaction": "down",
-                    "vk": vk, "char": char, "ctrl": ctrl, "alt": alt, "shift": shift
+                    "vk": vk, "char": send_char, "ctrl": ctrl, "alt": alt, "shift": shift
                 }))
-                await asyncio.sleep(0.06)
+                await asyncio.sleep(0.05)
                 await ws.send(json.dumps({
                     "action": "key", "source": "agent", "mode": "direct", "subaction": "up",
-                    "vk": vk, "char": char, "ctrl": ctrl, "alt": alt, "shift": shift
+                    "vk": vk, "char": send_char, "ctrl": ctrl, "alt": alt, "shift": shift
                 }))
-                await asyncio.sleep(0.02)
-
-                # 依序釋放修飾鍵
-                if shift:
-                    await ws.send(json.dumps({"action": "key", "source": "agent", "mode": "direct", "subaction": "up", "vk": 16}))
-                if alt:
-                    await ws.send(json.dumps({"action": "key", "source": "agent", "mode": "direct", "subaction": "up", "vk": 18}))
-                if ctrl:
-                    await ws.send(json.dumps({"action": "key", "source": "agent", "mode": "direct", "subaction": "up", "vk": 17}))
+                await asyncio.sleep(0.06)
 
                 res = await ws.recv()
                 while isinstance(res, bytes):
@@ -520,26 +536,31 @@ def main():
                     await asyncio.sleep(0.1)
 
                 if sub == "click":
+                    # 先讓 AI 虛擬游標平滑飛行至目標座標 (0% 實體滑鼠位移)
                     await ws.send(json.dumps({
-                        "action": "mouse", "source": "agent", "mode": "direct", "subaction": "down",
+                        "action": "mouse", "source": "agent", "mode": "direct", "subaction": "move",
+                        "button": "none", "u": u_val, "v": v_val, "delta": 0
+                    }))
+                    await asyncio.sleep(0.16)
+                    # 執行原子化 click：快照主螢幕游標與焦點 -> 點擊 -> 12ms 內自動歸還主螢幕游標與焦點
+                    await ws.send(json.dumps({
+                        "action": "mouse", "source": "agent", "mode": "direct", "subaction": "click",
                         "button": args.button, "u": u_val, "v": v_val, "delta": 0
                     }))
-                    await asyncio.sleep(0.05)
-                    await ws.send(json.dumps({
-                        "action": "mouse", "source": "agent", "mode": "direct", "subaction": "up",
-                        "button": args.button, "u": u_val, "v": v_val, "delta": 0
-                    }))
+                    await asyncio.sleep(0.08)
                 else:
                     await ws.send(json.dumps({
                         "action": "mouse", "source": "agent", "mode": "direct", "subaction": sub,
                         "button": args.button, "u": u_val, "v": v_val, "delta": 0
                     }))
-                print(f"[MOUSE] 已執行滑鼠 {sub} 於 ({u_val}, {v_val}) [{args.button}]")
+                    await asyncio.sleep(0.06)
+                print(f"[MOUSE] 已執行 AI 虛擬游標 {sub} 於 ({u_val}, {v_val}) [{args.button}] (主畫面游標與焦點已無感歸還)")
         asyncio.run(exec_mouse())
 
     elif args.command == "open-url":
         async def exec_open_url():
             import websockets
+            saved_clipboard = get_clipboard_text()
             async with websockets.connect(WS_URL) as ws:
                 h = parse_hwnd(args.hwnd) if args.hwnd else None
                 if h:
@@ -557,7 +578,7 @@ def main():
                 await ws.send(json.dumps({"action": "key", "source": "agent", "mode": "direct", "subaction": "up", "vk": 17}))
                 await asyncio.sleep(0.25)
 
-                # 2. 注入網址 (Windows 原生剪貼簿 + Ctrl+V 即時貼入，0 延遲且無字元上限)
+                # 2. 注入網址 (Windows 原生剪貼簿 + Ctrl+V 即時貼入，並自動備份還原使用者剪貼簿)
                 print(f"[OPEN-URL] 正在貼入目標網址 ({len(args.url)} 字元): {args.url}...")
                 set_clipboard_text(args.url)
                 await ws.send(json.dumps({"action": "key", "source": "agent", "mode": "direct", "subaction": "down", "vk": 17}))
@@ -567,15 +588,20 @@ def main():
                 await ws.send(json.dumps({"action": "key", "source": "agent", "mode": "direct", "subaction": "up", "vk": 86}))
                 await asyncio.sleep(0.04)
                 await ws.send(json.dumps({"action": "key", "source": "agent", "mode": "direct", "subaction": "up", "vk": 17}))
-                await asyncio.sleep(0.25)
+                await asyncio.sleep(0.20)
 
-                # 3. 按下 Enter 進行導航 (VK_RETURN 13)
+                if saved_clipboard is not None:
+                    set_clipboard_text(saved_clipboard)
+
+                # 3. 按下 Enter 進行導航 (VK_RETURN 13)，key up 時引擎會自動歸還主螢幕焦點
                 print("[OPEN-URL] 正在送出 Enter 進行導航...")
                 await ws.send(json.dumps({"action": "key", "source": "agent", "mode": "direct", "subaction": "down", "vk": 13}))
                 await asyncio.sleep(0.05)
                 await ws.send(json.dumps({"action": "key", "source": "agent", "mode": "direct", "subaction": "up", "vk": 13}))
-                await asyncio.sleep(0.5)
-                print("[OPEN-URL] 導航指令已全數成功發送！")
+                await asyncio.sleep(0.15)
+                await ws.send(json.dumps({"action": "restore_primary_focus"}))
+                await asyncio.sleep(0.25)
+                print("[OPEN-URL] 導航指令已發送，剪貼簿與主畫面焦點已自動歸還！")
 
         asyncio.run(exec_open_url())
 

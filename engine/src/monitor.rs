@@ -2,10 +2,12 @@ use serde::Serialize;
 use std::mem::size_of;
 use windows::Win32::Foundation::{BOOL, HWND, LPARAM, RECT};
 use windows::Win32::Graphics::Gdi::{
-    EnumDisplayMonitors, GetMonitorInfoW, HDC, HMONITOR, MONITORINFOEXW,
+    EnumDisplayMonitors, GetMonitorInfoW, RedrawWindow, HDC, HMONITOR, HRGN, MONITORINFOEXW,
+    RDW_ALLCHILDREN, RDW_ERASE, RDW_FRAME, RDW_INVALIDATE, RDW_UPDATENOW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    SetWindowPos, ShowWindow, HWND_TOP, SWP_SHOWWINDOW, SW_RESTORE,
+    SetWindowPos, ShowWindow, HWND_NOTOPMOST, HWND_TOP, HWND_TOPMOST, SWP_FRAMECHANGED,
+    SWP_NOACTIVATE, SWP_SHOWWINDOW, SW_MAXIMIZE, SW_RESTORE,
 };
 
 #[derive(Debug, Clone, Serialize)]
@@ -330,18 +332,53 @@ impl MonitorManager {
 
         unsafe {
             let hwnd = HWND(hwnd_val as *mut _);
+            // 1. 先解除原主螢幕上的最大化/最小化鎖定，以便跨螢幕移動
             let _ = ShowWindow(hwnd, SW_RESTORE);
-            if SetWindowPos(
+
+            // 2. 第一階段跨螢幕落點：將視窗移入虛擬螢幕內部，觸發 Windows WM_DPICHANGED (例如 200% -> 100% 縮放轉換)
+            let _ = SetWindowPos(
                 hwnd,
-                HWND_TOP,
+                HWND_TOPMOST,
+                target.x + 16,
+                target.y + 16,
+                (target.width - 32).max(800),
+                (target.height - 32).max(600),
+                SWP_SHOWWINDOW | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+            );
+
+            // 給予瀏覽器 (Chrome / Firefox) 30ms 消化跨螢幕 DPI 變更事件
+            std::thread::sleep(std::time::Duration::from_millis(30));
+
+            // 3. 第二階段：在虛擬螢幕上執行原生最大化 (SW_MAXIMIZE)，並透過 TOPMOST -> NOTOPMOST 確保 Z-Order 絕對置頂且不搶主螢幕焦點
+            let _ = ShowWindow(hwnd, SW_MAXIMIZE);
+            let _ = SetWindowPos(
+                hwnd,
+                HWND_TOPMOST,
                 target.x,
                 target.y,
                 target.width,
                 target.height,
-                SWP_SHOWWINDOW,
+                SWP_SHOWWINDOW | SWP_NOACTIVATE | SWP_FRAMECHANGED,
+            );
+            if SetWindowPos(
+                hwnd,
+                HWND_NOTOPMOST,
+                target.x,
+                target.y,
+                target.width,
+                target.height,
+                SWP_SHOWWINDOW | SWP_NOACTIVATE | SWP_FRAMECHANGED,
             ).is_err() {
                 return Err("SetWindowPos 派駐視窗至虛擬螢幕失敗".into());
             }
+
+            // 4. 強制視窗與所有子控制項立即完整重繪，觸發 DWM 與 GDI 雙雙更新緩衝區
+            let _ = RedrawWindow(
+                hwnd,
+                None,
+                HRGN::default(),
+                RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN | RDW_UPDATENOW,
+            );
         }
 
         Ok(target)
@@ -374,10 +411,16 @@ impl MonitorManager {
                 primary.y + 80,
                 (primary.width * 3 / 4).max(800),
                 (primary.height * 3 / 4).max(600),
-                SWP_SHOWWINDOW,
+                SWP_SHOWWINDOW | SWP_FRAMECHANGED,
             ).is_err() {
                 return Err("SetWindowPos 將視窗移回主螢幕失敗".into());
             }
+            let _ = RedrawWindow(
+                hwnd,
+                None,
+                HRGN::default(),
+                RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_ALLCHILDREN | RDW_UPDATENOW,
+            );
         }
 
         Ok(primary)
