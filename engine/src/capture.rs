@@ -578,8 +578,15 @@ impl WindowCapturer {
 
         if is_on_virtual {
             match DxgiCapturer::new_for_display("") {
-                Ok(c) => {
-                    println!("[WindowCapturer] 目標位於虛擬螢幕 ({})，啟用 DXGI 硬體零 CPU 擷取！", c.display_name);
+                Ok(mut c) => {
+                    println!("[WindowCapturer] 目標位於虛擬螢幕 ({})，啟用 DXGI 硬體零 CPU 桌面擷取！", c.display_name);
+                    // 冷啟動重試最多 3 次，確保必定抓到含 Taskbar 之完整桌面首幀
+                    for _ in 0..3 {
+                        if !c.last_jpeg.is_empty() {
+                            break;
+                        }
+                        let _ = c.capture_jpeg(150, 75);
+                    }
                     if !c.last_jpeg.is_empty() {
                         last_jpeg = c.last_jpeg.clone();
                     }
@@ -591,8 +598,8 @@ impl WindowCapturer {
             }
         }
 
-        // 若 DXGI 冷啟動尚未抓到第一幀（因為視窗剛派駐完畢、畫面靜止），立即透過 GDI PrintWindow 抓取首幀！
-        if last_jpeg.is_empty() {
+        // 僅在實體主螢幕 (非虛擬螢幕，即 dxgi is None) 且 last_jpeg 為空時，才呼叫 GDI 抓取單獨視窗
+        if dxgi.is_none() && last_jpeg.is_empty() {
             if let Ok(Some(frame)) = gdi.capture_jpeg(75) {
                 last_jpeg = frame;
             }
@@ -605,7 +612,7 @@ impl WindowCapturer {
             dxgi,
             gdi,
             last_jpeg,
-            needs_fallback_frame: true,
+            needs_fallback_frame: false,
         }
     }
 
@@ -628,45 +635,51 @@ impl WindowCapturer {
 
     pub fn invalidate(&mut self) {
         self.gdi.invalidate();
-        self.needs_fallback_frame = true;
     }
 
     pub fn capture_jpeg(&mut self, quality: u8) -> Result<Option<Arc<Vec<u8>>>, String> {
         // 如果目前尚未開啟 DXGI，但視窗已被移至虛擬螢幕，動態晉升為 DXGI！
         if self.dxgi.is_none() && Self::is_window_on_virtual_display(self.hwnd) {
-            if let Ok(c) = DxgiCapturer::new_for_display("") {
-                println!("[WindowCapturer] 偵測到視窗進入虛擬螢幕 ({})，動態晉升為 DXGI 硬體擷取", c.display_name);
+            if let Ok(mut c) = DxgiCapturer::new_for_display("") {
+                println!("[WindowCapturer] 偵測到視窗進入虛擬螢幕 ({})，動態晉升為 DXGI 硬體桌面擷取", c.display_name);
+                for _ in 0..3 {
+                    if !c.last_jpeg.is_empty() {
+                        break;
+                    }
+                    let _ = c.capture_jpeg(150, quality);
+                }
+                if !c.last_jpeg.is_empty() {
+                    self.last_jpeg = c.last_jpeg.clone();
+                }
                 self.dxgi = Some(c);
-                self.needs_fallback_frame = true;
             }
         }
 
         if let Some(dxgi) = self.dxgi.as_mut() {
-            // DXGI 模式：設置 50ms 超時等待新幀
+            // 虛擬螢幕 DXGI 模式：設置 50ms 等待 GPU 提交新幀
             match dxgi.capture_jpeg(50, quality) {
                 Ok(Some(frame)) => {
                     self.width = dxgi.width as i32;
                     self.height = dxgi.height as i32;
                     self.last_jpeg = frame.clone();
-                    self.needs_fallback_frame = false;
                     return Ok(Some(frame));
                 }
                 Ok(None) => {
-                    // 若剛發生視窗切換、派駐或輸入重繪 (needs_fallback_frame == true)，
-                    // 不直接返回 None，而是往下穿透至 GDI PrintWindow 強制補抓最新視窗畫面！
-                    if !self.needs_fallback_frame && !self.last_jpeg.is_empty() {
-                        return Ok(None);
-                    }
+                    // 畫面靜止 (GPU 無提交新幀)：保持現有完整桌面幀 (含 Taskbar)，
+                    // 絕不降級至 GDI PrintWindow，防止 Taskbar 消失與畫面解析度畸變！
+                    return Ok(None);
                 }
                 Err(e) => {
-                    eprintln!("[WindowCapturer] DXGI 捕獲異常 ({:?})，降級至 GDI 模式", e);
-                    self.dxgi = None; // 降級並重置
+                    eprintln!("[WindowCapturer] DXGI 捕獲異常 ({:?})，嘗試重新連接虛擬螢幕 DXGI", e);
+                    if let Ok(c) = DxgiCapturer::new_for_display("") {
+                        *dxgi = c;
+                    }
+                    return Ok(None);
                 }
             }
         }
 
-        // GDI 備援與強制補幀路徑 (PrintWindow PW_RENDERFULLCONTENT)
-        self.needs_fallback_frame = false;
+        // 僅在實體螢幕純背景模式 (dxgi is None) 下使用 GDI 抓取單一視窗
         let res = self.gdi.capture_jpeg(quality);
         if let Ok(Some(ref frame)) = res {
             self.width = self.gdi.width;
