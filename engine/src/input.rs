@@ -502,10 +502,29 @@ impl InputArbiter {
                 return Err("無法獲取視窗外框 RECT".into());
             }
 
-            let width = (r.right - r.left) as f64;
-            let height = (r.bottom - r.top) as f64;
-            let screen_x = (r.left as f64 + (u.clamp(0.0, 1.0) * width)).round() as i32;
-            let screen_y = (r.top as f64 + (v.clamp(0.0, 1.0) * height)).round() as i32;
+            let is_on_virtual = crate::capture::WindowCapturer::is_window_on_virtual_display(hwnd_val);
+            let (screen_x, screen_y) = if is_on_virtual {
+                let virtual_mon = crate::monitor::MonitorManager::list_monitors()
+                    .into_iter()
+                    .find(|m| m.is_virtual_candidate);
+                if let Some(vm) = virtual_mon {
+                    let sx = vm.x as f64 + (u.clamp(0.0, 1.0) * vm.width as f64);
+                    let sy = vm.y as f64 + (v.clamp(0.0, 1.0) * vm.height as f64);
+                    (sx.round() as i32, sy.round() as i32)
+                } else {
+                    let width = (r.right - r.left) as f64;
+                    let height = (r.bottom - r.top) as f64;
+                    let sx = r.left as f64 + (u.clamp(0.0, 1.0) * width);
+                    let sy = r.top as f64 + (v.clamp(0.0, 1.0) * height);
+                    (sx.round() as i32, sy.round() as i32)
+                }
+            } else {
+                let width = (r.right - r.left) as f64;
+                let height = (r.bottom - r.top) as f64;
+                let sx = r.left as f64 + (u.clamp(0.0, 1.0) * width);
+                let sy = r.top as f64 + (v.clamp(0.0, 1.0) * height);
+                (sx.round() as i32, sy.round() as i32)
+            };
 
             // 換算虛擬多螢幕絕對座標 (RustDesk 規範)
             let vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
@@ -668,13 +687,12 @@ impl InputArbiter {
                 SendInput(&inputs, size_of::<INPUT>() as i32);
             }
 
-            // 無論是 down / move / up / wheel，等待 10ms 讓目標應用訊息迴圈接收後，
-            // 100% 將實體滑鼠游標歸還至主螢幕原位置，徹底杜絕實體游標滯留或卡死在虛擬螢幕！
-            std::thread::sleep(Duration::from_millis(10));
+            // 關鍵拖曳與滾動條修復：
+            // 只有在動作釋放 (up)、滾輪 (wheel) 或單次原子點擊時，才將實體游標與焦點一次性歸還主螢幕！
+            // 在按下 (down) 與拖曳移動 (move) 期間，游標持續停留在第二螢幕目標座標上，讓 Windows 拖曳與滾動條追蹤絕不中斷！
             if action == "up" || action == "wheel" || !is_user {
+                std::thread::sleep(Duration::from_millis(10));
                 self.restore_primary_state(hwnd);
-            } else {
-                self.restore_primary_cursor_only();
             }
 
             Ok(format!(

@@ -508,11 +508,12 @@ viewport.addEventListener('mousedown', (e) => {
   // 立即將畫布上的虛擬 AI 游標移至點擊處，提供即時視覺回饋，同時實體滑鼠 100% 留在畫布原位
   handleAiCursorEvent({ u, v, subaction: 'move', source: 'user' });
 
-  if (getMode() === 'background' && ws && ws.readyState === WebSocket.OPEN) {
+  // 立即發送 down 事件到目標，無論是點擊還是拖曳，第一時間在目標位置壓下按鈕
+  if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(JSON.stringify({
       action: 'mouse',
       source: 'user',
-      mode: 'background',
+      mode: getMode(),
       subaction: 'down',
       button: dragButton,
       u, v, delta: 0
@@ -531,33 +532,36 @@ window.addEventListener('mouseup', (e) => {
     const mode = getMode();
 
     if (ws && ws.readyState === WebSocket.OPEN) {
-      if (mode === 'direct' && !hasMovedDuringDrag) {
-        // 單次點擊：發送原子化 click 指令（引擎在 12ms 內完成點擊並立即將實體游標與焦點歸還主螢幕，絕不卡住滑鼠！）
-        ws.send(JSON.stringify({
-          action: 'mouse',
-          source: 'user',
-          mode: 'direct',
-          subaction: 'click',
-          button: dragButton,
-          u: downCoords.u,
-          v: downCoords.v,
-          delta: 0
-        }));
-        handleAiCursorEvent({ u: downCoords.u, v: downCoords.v, subaction: 'click', source: 'user', focus_restored: true });
-        log('人類操作', `虛擬游標原子點擊 (${downCoords.u}, ${downCoords.v}) [${dragButton}] → 主畫面滑鼠 0 位移`, 'user');
-      } else {
-        ws.send(JSON.stringify({
-          action: 'mouse',
-          source: 'user',
-          mode,
-          subaction: 'up',
-          button: dragButton,
-          u, v, delta: 0
-        }));
-        log('人類操作', `釋放 ${dragButton} → 滑鼠與鍵盤焦點已自動歸還主畫面`, 'user');
-      }
+      ws.send(JSON.stringify({
+        action: 'mouse',
+        source: 'user',
+        mode,
+        subaction: 'up',
+        button: dragButton,
+        u, v, delta: 0
+      }));
+      handleAiCursorEvent({ u, v, subaction: 'click', source: 'user', focus_restored: true });
+      log('人類操作', `釋放 ${dragButton} (${u.toFixed(3)}, ${v.toFixed(3)}) → 滑鼠與焦點已歸還主畫面`, 'user');
     }
     hasMovedDuringDrag = false;
+  }
+});
+
+window.addEventListener('blur', () => {
+  if (isDragging) {
+    isDragging = false;
+    if (ws && ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({
+        action: 'mouse',
+        source: 'user',
+        mode: getMode(),
+        subaction: 'up',
+        button: dragButton,
+        u: downCoords.u,
+        v: downCoords.v,
+        delta: 0
+      }));
+    }
   }
 });
 
@@ -577,40 +581,22 @@ viewport.addEventListener('mousemove', (e) => {
   updateHudStat(`(${u.toFixed(3)}, ${v.toFixed(3)})`);
 
   if (isDragging) {
-    const dist = Math.hypot(u - downCoords.u, v - downCoords.v);
-    if (!hasMovedDuringDrag && dist > 0.008) {
-      hasMovedDuringDrag = true;
-      if (getMode() === 'direct' && ws && ws.readyState === WebSocket.OPEN) {
+    hasMovedDuringDrag = true;
+    const now = performance.now();
+    if (now - lastMoveTime >= 16) {
+      lastMoveTime = now;
+      handleAiCursorEvent({ u, v, subaction: 'move', source: 'user' });
+      if (ws && ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({
           action: 'mouse',
           source: 'user',
-          mode: 'direct',
-          subaction: 'down',
+          mode: getMode(),
+          subaction: 'move',
           button: dragButton,
-          u: downCoords.u,
-          v: downCoords.v,
-          delta: 0
+          u, v, delta: 0
         }));
       }
-    }
-
-    if (hasMovedDuringDrag) {
-      const now = performance.now();
-      if (now - lastMoveTime >= 16) {
-        lastMoveTime = now;
-        handleAiCursorEvent({ u, v, subaction: 'move', source: 'user' });
-        if (ws && ws.readyState === WebSocket.OPEN) {
-          ws.send(JSON.stringify({
-            action: 'mouse',
-            source: 'user',
-            mode: getMode(),
-            subaction: 'move',
-            button: dragButton,
-            u, v, delta: 0
-          }));
-        }
-        setHumanActive(dragButton === 'middle' ? '中鍵 3D 視角旋轉' : '滑鼠拖曳軌跡');
-      }
+      setHumanActive(dragButton === 'middle' ? '中鍵 3D 視角旋轉' : '滑鼠拖曳中');
     }
   }
 });
