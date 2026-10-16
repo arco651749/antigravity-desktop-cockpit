@@ -63,10 +63,7 @@ function updateHudStat(coords) {
     hudStat.textContent = `FPS: ${displayedFps} | 游標: ${currentCoords}`;
   }
 }
-let isDragging = false;
-let dragButton = 'left';
 let humanTimeout = null;
-let lastMoveTime = 0;
 let detectedVirtualMon = null;
 
 function log(sender, text, type = 'sys') {
