@@ -37,6 +37,8 @@ Desktop Cockpit 串流引擎（`gui-stream-engine`）本機監聽 `127.0.0.1:482
 
 | Action (`action`) | 功能說明 | 核心參數 | AI / 程式調用場景 |
 | :--- | :--- | :--- | :--- |
+| **`launch`** | 啟動指定應用程式並支援直接派駐至虛擬顯示器 | `path`, `args`, `target_screen`, `wait_for_window` | 零彈窗離屏啟動應用程式（主螢幕 0 閃爍） |
+| **`close`** | 關閉目標視窗或進程 | `hwnd`, `pid`, `force`, `timeout_ms` | 先發送 WM_CLOSE 優雅退出，可選 --force 超時強殺 |
 | **`get_windows`** | 查詢系統所有在線活動視窗清單 | 無 | 尋找目標應用程式的 HWND 視窗控制代碼 |
 | **`get_monitors`** | 查詢 Windows 顯示器拓撲 | 無 | 偵測虛擬第二螢幕狀態 |
 | **`plug_in_virtual_display`** | 程式化掛載虛擬第二螢幕 (0 批次檔、0 UAC) | 無 | 透過 Win32 DeviceIoControl 直通掛載虛擬螢幕 |
@@ -97,6 +99,57 @@ Desktop Cockpit 串流引擎（`gui-stream-engine`）本機監聽 `127.0.0.1:482
       "width": 1920,
       "height": 1080,
       "is_virtual_candidate": true
+    }
+  }
+  ```
+
+#### `launch`
+- **Request**:
+  ```json
+  {
+    "action": "launch",
+    "path": "notepad.exe",
+    "args": ["file.txt"],
+    "target_screen": "virtual",
+    "wait_for_window": true,
+    "timeout_ms": 5000
+  }
+  ```
+- **Response Event**:
+  ```json
+  {
+    "event": "app_launched",
+    "status": "ok",
+    "message": "成功啟動進程 (PID: 71220) 並派駐至視窗 0x34125A",
+    "data": {
+      "pid": 71220,
+      "hwnd": 3412570,
+      "title": "Notepad",
+      "target_screen": "virtual"
+    }
+  }
+  ```
+
+#### `close` (或 `close_window` / `terminate`)
+- **Request**:
+  ```json
+  {
+    "action": "close",
+    "hwnd": 3412570,
+    "force": true,
+    "timeout_ms": 2500
+  }
+  ```
+- **Response Event**:
+  ```json
+  {
+    "event": "window_closed",
+    "status": "ok",
+    "message": "視窗已關閉 (HWND: Some(\"0x34125A\"), PID: Some(71220), Force: true)",
+    "data": {
+      "hwnd": 3412570,
+      "pid": 71220,
+      "forced": true
     }
   }
   ```

@@ -9,6 +9,7 @@ use windows::Win32::System::StationsAndDesktops::{
 use windows::Win32::System::Threading::{
     CreateProcessW, GetCurrentThreadId, TerminateProcess,
     CREATE_NEW_CONSOLE, PROCESS_INFORMATION, STARTUPINFOW,
+    STARTF_USEPOSITION, STARTF_USESIZE, STARTF_USESHOWWINDOW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     GetClassNameW, GetWindowRect, GetWindowTextLengthW, GetWindowTextW,
@@ -27,6 +28,21 @@ pub struct DesktopWindowInfo {
     pub height: i32,
     pub x: i32,
     pub y: i32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LaunchResult {
+    pub pid: u32,
+    pub hwnd: Option<isize>,
+    pub title: Option<String>,
+    pub target_screen: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CloseResult {
+    pub hwnd: Option<isize>,
+    pub pid: Option<u32>,
+    pub forced: bool,
 }
 
 pub struct DesktopManager;
@@ -239,6 +255,263 @@ impl DesktopManager {
             let w = GetSystemMetrics(SM_CXSCREEN);
             let h = GetSystemMetrics(SM_CYSCREEN);
             (w.max(1280), h.max(720))
+        }
+    }
+
+    /// 啟動指定應用程式並支援直接指派至虛擬顯示器 (0 彈窗干擾)
+    pub fn launch_app(
+        path: &str,
+        args: &[String],
+        target_screen: &str,
+        working_dir: Option<&str>,
+        wait_for_window: bool,
+        timeout_ms: u64,
+    ) -> Result<LaunchResult, String> {
+        crate::capture::ensure_default_desktop();
+
+        let is_virtual = target_screen.eq_ignore_ascii_case("virtual");
+        let vmon = if is_virtual {
+            Some(crate::monitor::MonitorManager::ensure_virtual_monitor()?)
+        } else {
+            None
+        };
+
+        // 構造完整命令列: "path" arg1 arg2 ...
+        let full_cmd = if path.starts_with('"') && path.ends_with('"') {
+            if args.is_empty() {
+                path.to_string()
+            } else {
+                format!("{} {}", path, args.join(" "))
+            }
+        } else if path.contains(' ') {
+            if args.is_empty() {
+                format!("\"{}\"", path)
+            } else {
+                format!("\"{}\" {}", path, args.join(" "))
+            }
+        } else {
+            if args.is_empty() {
+                path.to_string()
+            } else {
+                format!("{} {}", path, args.join(" "))
+            }
+        };
+
+        let mut cmd_wide: Vec<u16> = full_cmd.encode_utf16().chain(std::iter::once(0)).collect();
+        let working_dir_wide = working_dir.map(|d| d.encode_utf16().chain(std::iter::once(0)).collect::<Vec<u16>>());
+
+        let mut si = STARTUPINFOW::default();
+        si.cb = std::mem::size_of::<STARTUPINFOW>() as u32;
+
+        if let Some(ref vm) = vmon {
+            // 直接指定視窗出生座標在虛擬第二螢幕！
+            si.dwFlags = STARTF_USEPOSITION | STARTF_USESIZE | STARTF_USESHOWWINDOW;
+            si.dwX = vm.x as u32;
+            si.dwY = vm.y as u32;
+            si.dwXSize = vm.width as u32;
+            si.dwYSize = vm.height as u32;
+            si.wShowWindow = windows::Win32::UI::WindowsAndMessaging::SW_SHOWMAXIMIZED.0 as u16;
+        } else {
+            si.dwFlags = STARTF_USESHOWWINDOW;
+            si.wShowWindow = windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL.0 as u16;
+        }
+
+        let mut pi = PROCESS_INFORMATION::default();
+
+        // 記錄啟動前所有頂層視窗 HWND 集合，以便啟動後精確匹配新增視窗
+        let before_hwnds: std::collections::HashSet<isize> = crate::capture::WindowEnumerator::list_windows()
+            .into_iter()
+            .map(|w| w.hwnd)
+            .collect();
+
+        unsafe {
+            let pcw_work_dir = match working_dir_wide.as_ref() {
+                Some(w) => PCWSTR(w.as_ptr()),
+                None => PCWSTR::null(),
+            };
+
+            let res = CreateProcessW(
+                PCWSTR::null(),
+                PWSTR(cmd_wide.as_mut_ptr()),
+                None,
+                None,
+                false,
+                windows::Win32::System::Threading::PROCESS_CREATION_FLAGS(0),
+                None,
+                pcw_work_dir,
+                &si,
+                &mut pi,
+            );
+
+            if res.is_err() {
+                return Err(format!(
+                    "CreateProcessW 啟動失敗 (命令: {}): {:?}",
+                    full_cmd,
+                    windows::core::Error::from_win32()
+                ));
+            }
+
+            let pid = pi.dwProcessId;
+            let _ = CloseHandle(pi.hProcess);
+            let _ = CloseHandle(pi.hThread);
+
+            println!("[DesktopManager] 程式已啟動 (PID: {}): {}", pid, full_cmd);
+
+            if !wait_for_window {
+                return Ok(LaunchResult {
+                    pid,
+                    hwnd: None,
+                    title: None,
+                    target_screen: target_screen.to_string(),
+                });
+            }
+
+            // 輪詢等待頂層可見視窗生成
+            let start = std::time::Instant::now();
+            let timeout = std::time::Duration::from_millis(timeout_ms.max(500));
+            let mut found_hwnd: Option<isize> = None;
+            let mut found_title: Option<String> = None;
+
+            while start.elapsed() < timeout {
+                std::thread::sleep(std::time::Duration::from_millis(80));
+
+                let current_windows = crate::capture::WindowEnumerator::list_windows();
+
+                // 策略 1: 依 PID 精確匹配
+                for w in &current_windows {
+                    let hwnd = HWND(w.hwnd as *mut _);
+                    let mut win_pid = 0u32;
+                    GetWindowThreadProcessId(hwnd, Some(&mut win_pid));
+                    if win_pid == pid && !w.title.is_empty() {
+                        found_hwnd = Some(w.hwnd);
+                        found_title = Some(w.title.clone());
+                        break;
+                    }
+                }
+
+                // 策略 2: 若 PID 相同未找到（例如 Chrome 代理進程架構），匹配啟動後新增之頂層視窗
+                if found_hwnd.is_none() {
+                    for w in &current_windows {
+                        if !before_hwnds.contains(&w.hwnd) && !w.title.is_empty() && w.width > 100 && w.height > 100 {
+                            found_hwnd = Some(w.hwnd);
+                            found_title = Some(w.title.clone());
+                            break;
+                        }
+                    }
+                }
+
+                if let Some(h) = found_hwnd {
+                    // 若目標螢幕為 virtual，強制執行 dispatch_to_virtual 確保它在虛擬螢幕最大化並置頂重繪！
+                    if is_virtual {
+                        let _ = crate::monitor::MonitorManager::dispatch_to_virtual(h);
+                    }
+                    break;
+                }
+            }
+
+            Ok(LaunchResult {
+                pid,
+                hwnd: found_hwnd,
+                title: found_title,
+                target_screen: target_screen.to_string(),
+            })
+        }
+    }
+
+    /// 關閉或強制終止應用程式視窗與進程
+    pub fn close_app(
+        target_hwnd: Option<isize>,
+        target_pid: Option<u32>,
+        force: bool,
+        timeout_ms: u64,
+    ) -> Result<CloseResult, String> {
+        crate::capture::ensure_default_desktop();
+        unsafe {
+            use windows::Win32::UI::WindowsAndMessaging::{
+                IsWindow, PostMessageW, WM_CLOSE,
+            };
+
+            let mut actual_hwnd = target_hwnd;
+            let mut actual_pid = target_pid;
+
+            // 若有 HWND 但無 PID，反查 PID
+            if let Some(h) = actual_hwnd {
+                if actual_pid.is_none() {
+                    let mut p = 0u32;
+                    GetWindowThreadProcessId(HWND(h as *mut _), Some(&mut p));
+                    if p > 0 {
+                        actual_pid = Some(p);
+                    }
+                }
+            } else if let Some(p) = actual_pid {
+                // 若有 PID 但無 HWND，找該 PID 的視窗
+                let wins = crate::capture::WindowEnumerator::list_windows();
+                for w in wins {
+                    let mut wp = 0u32;
+                    GetWindowThreadProcessId(HWND(w.hwnd as *mut _), Some(&mut wp));
+                    if wp == p {
+                        actual_hwnd = Some(w.hwnd);
+                        break;
+                    }
+                }
+            }
+
+            if actual_hwnd.is_none() && actual_pid.is_none() {
+                return Err("未指定有效的 HWND 或 PID 進行關閉".into());
+            }
+
+            // 1. 若有視窗，先發送 WM_CLOSE 優雅退出
+            if let Some(h) = actual_hwnd {
+                let hwnd = HWND(h as *mut _);
+                if IsWindow(hwnd).as_bool() {
+                    let _ = PostMessageW(
+                        hwnd,
+                        WM_CLOSE,
+                        windows::Win32::Foundation::WPARAM(0),
+                        windows::Win32::Foundation::LPARAM(0),
+                    );
+                }
+            }
+
+            let mut killed = false;
+            // 2. 如果要求 force，或者只有 PID 沒有視窗
+            if force {
+                let start = std::time::Instant::now();
+                let timeout = std::time::Duration::from_millis(timeout_ms.max(300));
+
+                while start.elapsed() < timeout {
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                    if let Some(h) = actual_hwnd {
+                        if !IsWindow(HWND(h as *mut _)).as_bool() {
+                            break;
+                        }
+                    }
+                }
+
+                let still_alive = match actual_hwnd {
+                    Some(h) => IsWindow(HWND(h as *mut _)).as_bool(),
+                    None => true,
+                };
+
+                if still_alive {
+                    if let Some(p) = actual_pid {
+                        let _ = Self::kill_process(p);
+                        killed = true;
+                    }
+                }
+            } else if actual_hwnd.is_none() {
+                // 沒有視窗只有 PID 時，非強制也必須調用 kill_process
+                if let Some(p) = actual_pid {
+                    Self::kill_process(p)?;
+                    killed = true;
+                }
+            }
+
+            Ok(CloseResult {
+                hwnd: actual_hwnd,
+                pid: actual_pid,
+                forced: force || killed,
+            })
         }
     }
 }

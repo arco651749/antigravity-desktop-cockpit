@@ -143,33 +143,48 @@ python.exe -X utf8 "D:\Users\arco0\.gemini\config\plugins\antigravity-desktop-co
 
 ---
 
-## 3. 視窗調度與管理 (Window Lifecycle)
+## 3. 視窗調度與生命週期管理 (Full Lifecycle)
 
 ```mermaid
 flowchart LR
-    A["1. 查詢視窗<br/>cockpit_cli.py list"] --> B["2. 派駐至第二螢幕<br/>cockpit_cli.py dispatch &lt;hwnd&gt;"]
-    B --> C["3. 執行操作與截圖驗收<br/>cockpit_cli.py mouse / drag / type"]
-    C --> D["4. 任務完成移回主螢幕<br/>cockpit_cli.py restore &lt;hwnd&gt;"]
+    A["1. 啟動並直接派駐 (0 彈窗)<br/>cockpit_cli.py launch &lt;app&gt;"] --> B["2. 執行操作與驗收<br/>cockpit_cli.py mouse / drag / type / uia"]
+    B --> C["3. 任務完成關閉或移回<br/>cockpit_cli.py close &lt;hwnd&gt; / restore"]
 ```
 
 ### 常用命令清單
-1. **查詢活動視窗**（支援標題過濾）：
+1. **啟動應用程式並直接於虛擬第二螢幕生成（0 彈窗干擾）**：
+   ```powershell
+   # 啟動 Notepad，自動於虛擬螢幕最大化誕生並鎖定
+   python.exe -X utf8 "D:\Users\arco0\.gemini\config\plugins\antigravity-desktop-cockpit\skills\desktop-cockpit\scripts\cockpit_cli.py" launch "notepad.exe"
+
+   # 帶參數啟動 Chrome
+   python.exe -X utf8 "D:\Users\arco0\.gemini\config\plugins\antigravity-desktop-cockpit\skills\desktop-cockpit\scripts\cockpit_cli.py" launch "chrome.exe" -a "https://www.google.com" "--force-renderer-accessibility"
+   ```
+2. **查詢活動視窗**（支援標題過濾）：
    ```powershell
    python.exe -X utf8 "D:\Users\arco0\.gemini\config\plugins\antigravity-desktop-cockpit\skills\desktop-cockpit\scripts\cockpit_cli.py" list -f "Firefox"
    ```
-2. **派駐至虛擬螢幕**（具備自動掛載虛擬顯示器、最大化並強制重繪機制）：
+3. **派駐既有視窗至虛擬螢幕**（具備自動掛載虛擬顯示器、最大化並強制重繪機制）：
    ```powershell
    python.exe -X utf8 "D:\Users\arco0\.gemini\config\plugins\antigravity-desktop-cockpit\skills\desktop-cockpit\scripts\cockpit_cli.py" dispatch 0x704C4
    ```
-3. **鎖定當前串流視窗**：
+4. **鎖定當前串流視窗**：
    ```powershell
    python.exe -X utf8 "D:\Users\arco0\.gemini\config\plugins\antigravity-desktop-cockpit\skills\desktop-cockpit\scripts\cockpit_cli.py" set 0x704C4
    ```
-4. **截取目標畫面為圖片**（60 FPS DXGI 硬體即時截圖）：
+5. **截取目標畫面為圖片**（60 FPS DXGI 硬體即時截圖）：
    ```powershell
    python.exe -X utf8 "D:\Users\arco0\.gemini\config\plugins\antigravity-desktop-cockpit\skills\desktop-cockpit\scripts\cockpit_cli.py" capture -o "D:/screen.jpg" --hwnd 0x704C4
    ```
-5. **任務完成移回主螢幕**：
+6. **關閉目標視窗或進程**（先優雅發送 `WM_CLOSE`，可選 `--force` 超時強殺）：
+   ```powershell
+   # 優雅關閉視窗
+   python.exe -X utf8 "D:\Users\arco0\.gemini\config\plugins\antigravity-desktop-cockpit\skills\desktop-cockpit\scripts\cockpit_cli.py" close 0x704C4
+
+   # 超時強制終止進程
+   python.exe -X utf8 "D:\Users\arco0\.gemini\config\plugins\antigravity-desktop-cockpit\skills\desktop-cockpit\scripts\cockpit_cli.py" close 0x704C4 --force
+   ```
+7. **任務完成移回主螢幕**（若使用者需手動接管）：
    ```powershell
    python.exe -X utf8 "D:\Users\arco0\.gemini\config\plugins\antigravity-desktop-cockpit\skills\desktop-cockpit\scripts\cockpit_cli.py" restore 0x704C4
    ```

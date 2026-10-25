@@ -448,6 +448,21 @@ def main():
     p_display = subparsers.add_parser("display", help="控制或查詢虛擬顯示器硬體狀態 (0 批次檔、0 UAC 彈窗)")
     p_display.add_argument("action", choices=["on", "off", "status"], help="on=開啟, off=關閉, status=查詢狀態")
 
+    # launch
+    p_launch = subparsers.add_parser("launch", help="啟動應用程式並支援直接派駐至虛擬第二螢幕 (0 彈窗干擾)")
+    p_launch.add_argument("path", help="可執行檔路徑或指令名稱 (如: 'notepad.exe', 'C:\\...\\app.exe')")
+    p_launch.add_argument("-a", "--args", nargs="*", default=[], help="傳遞給應用程式的參數清單")
+    p_launch.add_argument("--screen", choices=["virtual", "primary"], default="virtual", help="目標顯示螢幕 (預設 virtual 虛擬第二螢幕)")
+    p_launch.add_argument("--working-dir", help="指定工作目錄")
+    p_launch.add_argument("--no-wait", action="store_true", help="不等待頂層視窗建立立即返回")
+    p_launch.add_argument("--timeout", type=int, default=5000, help="等待視窗超時毫秒數 (預設 5000)")
+
+    # close
+    p_close = subparsers.add_parser("close", help="關閉目標視窗或結束進程 (先優雅 WM_CLOSE，可選 --force 強殺)")
+    p_close.add_argument("target", nargs="?", help="目標視窗 HWND 或 PID (可為 0xHEX 或十進位，若省略則關閉當前鎖定視窗)")
+    p_close.add_argument("-f", "--force", action="store_true", help="若超時未退出則強制 TerminateProcess 結束進程")
+    p_close.add_argument("--timeout", type=int, default=2500, help="等待視窗退出的超時毫秒數 (預設 2500)")
+
     args = parser.parse_args()
 
     if args.command == "list":
@@ -823,6 +838,55 @@ def main():
             except Exception as e:
                 print(f"[ERROR] 拔除失敗: {e}")
                 sys.exit(1)
+
+    elif args.command == "launch":
+        cmd = {
+            "action": "launch",
+            "path": args.path,
+            "args": args.args,
+            "target_screen": args.screen,
+            "wait_for_window": not args.no_wait,
+            "timeout_ms": args.timeout,
+        }
+        if args.working_dir:
+            cmd["working_dir"] = args.working_dir
+        res = asyncio.run(send_cmd(cmd, wait_for_event="app_launched"))
+        if res and res.get("status") == "ok":
+            data = res.get("data", {})
+            h_val = data.get("hwnd")
+            h_str = f"0x{h_val:X}" if h_val else "無 (尚未偵測到頂層視窗)"
+            print(f"[SUCCESS] 應用程式已成功啟動！")
+            print(f"  PID:        {data.get('pid')}")
+            print(f"  目標螢幕:   {data.get('target_screen')}")
+            print(f"  頂層視窗:   {h_str}")
+            if data.get("title"):
+                print(f"  視窗標題:   {data.get('title')}")
+        else:
+            msg = res.get("message") if res else "未知錯誤"
+            print(f"[ERROR] 啟動失敗: {msg}")
+            sys.exit(1)
+
+    elif args.command == "close":
+        cmd = {
+            "action": "close",
+            "force": args.force,
+            "timeout_ms": args.timeout,
+        }
+        if args.target:
+            val = parse_hwnd(args.target)
+            cmd["hwnd"] = val
+        res = asyncio.run(send_cmd(cmd, wait_for_event="window_closed"))
+        if res and res.get("status") == "ok":
+            data = res.get("data", {})
+            h_val = data.get("hwnd")
+            h_str = f"0x{h_val:X}" if h_val else "未鎖定"
+            p_val = data.get("pid")
+            forced_str = " (強制終止)" if data.get("forced") else " (優雅退出)"
+            print(f"[SUCCESS] 視窗/進程已關閉{forced_str}: HWND={h_str}, PID={p_val}")
+        else:
+            msg = res.get("message") if res else "未知錯誤"
+            print(f"[ERROR] 關閉失敗: {msg}")
+            sys.exit(1)
 
 if __name__ == "__main__":
     main()

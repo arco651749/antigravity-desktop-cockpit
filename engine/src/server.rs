@@ -122,11 +122,44 @@ pub enum ClientCommand {
         #[serde(default)]
         hwnd: Option<isize>,
     },
-    #[serde(rename = "close_window")]
-    CloseWindow {
+    #[serde(rename = "launch")]
+    Launch {
+        path: String,
+        #[serde(default)]
+        args: Option<Vec<String>>,
+        #[serde(default = "default_target_screen")]
+        target_screen: String,
+        #[serde(default)]
+        working_dir: Option<String>,
+        #[serde(default = "default_true")]
+        wait_for_window: bool,
+        #[serde(default = "default_timeout_ms")]
+        timeout_ms: Option<u64>,
+    },
+    #[serde(rename = "close", alias = "close_window", alias = "terminate")]
+    Close {
         #[serde(default)]
         hwnd: Option<isize>,
+        #[serde(default)]
+        pid: Option<u32>,
+        #[serde(default)]
+        force: bool,
+        #[serde(default = "default_close_timeout_ms")]
+        timeout_ms: Option<u64>,
     },
+}
+
+fn default_target_screen() -> String {
+    "virtual".to_string()
+}
+fn default_true() -> bool {
+    true
+}
+fn default_timeout_ms() -> Option<u64> {
+    Some(4000)
+}
+fn default_close_timeout_ms() -> Option<u64> {
+    Some(2500)
 }
 
 fn default_source() -> String {
@@ -1050,39 +1083,114 @@ impl StreamServer {
                                 let _ = ctrl_tx.send(serde_json::to_string(&resp)?).await;
                             }
                         }
-                        Ok(ClientCommand::CloseWindow { hwnd }) => {
-                            let target_hwnd = self.resolve_target_hwnd(hwnd);
-
-                            if target_hwnd != 0 {
-                                match self.arbiter.close_window(target_hwnd) {
-                                    Ok(msg) => {
+                        Ok(ClientCommand::Launch {
+                            path,
+                            args,
+                            target_screen,
+                            working_dir,
+                            wait_for_window,
+                            timeout_ms,
+                        }) => {
+                            let args_slice: Vec<String> = args.unwrap_or_default();
+                            let timeout = timeout_ms.unwrap_or(4000);
+                            match DesktopManager::launch_app(
+                                &path,
+                                &args_slice,
+                                &target_screen,
+                                working_dir.as_deref(),
+                                wait_for_window,
+                                timeout,
+                            ) {
+                                Ok(res) => {
+                                    if let Some(h) = res.hwnd {
+                                        self.target_hwnd.store(h, Ordering::SeqCst);
+                                        *self.capture_mode.write().unwrap() = "direct".to_string();
                                         self.needs_refresh.store(true, Ordering::Relaxed);
-                                        let resp = ServerEvent {
-                                            event: "window_closed".into(),
+
+                                        let bcast_evt = ServerEvent {
+                                            event: "window_set".into(),
                                             status: "ok".into(),
-                                            message: Some(msg),
-                                            data: None,
+                                            message: Some(format!("已鎖定目標視窗 0x{:X}", h)),
+                                            data: Some(serde_json::json!({ "hwnd": h })),
                                         };
-                                        let _ = ctrl_tx.send(serde_json::to_string(&resp)?).await;
+                                        if let Ok(json_str) = serde_json::to_string(&bcast_evt) {
+                                            let _ = self.event_tx.send(json_str);
+                                        }
                                     }
-                                    Err(e) => {
-                                        let resp = ServerEvent {
-                                            event: "window_closed".into(),
-                                            status: "error".into(),
-                                            message: Some(e),
-                                            data: None,
-                                        };
-                                        let _ = ctrl_tx.send(serde_json::to_string(&resp)?).await;
-                                    }
+                                    let resp = ServerEvent {
+                                        event: "app_launched".into(),
+                                        status: "ok".into(),
+                                        message: Some(format!(
+                                            "成功啟動進程 (PID: {}){}",
+                                            res.pid,
+                                            if let Some(h) = res.hwnd {
+                                                format!(" 並派駐至視窗 0x{:X}", h)
+                                            } else {
+                                                "".to_string()
+                                            }
+                                        )),
+                                        data: Some(serde_json::to_value(&res)?),
+                                    };
+                                    let _ = ctrl_tx.send(serde_json::to_string(&resp)?).await;
                                 }
+                                Err(e) => {
+                                    let resp = ServerEvent {
+                                        event: "app_launched".into(),
+                                        status: "error".into(),
+                                        message: Some(e),
+                                        data: None,
+                                    };
+                                    let _ = ctrl_tx.send(serde_json::to_string(&resp)?).await;
+                                }
+                            }
+                        }
+                        Ok(ClientCommand::Close {
+                            hwnd,
+                            pid,
+                            force,
+                            timeout_ms,
+                        }) => {
+                            let target_h = if hwnd.is_some() && hwnd.unwrap() != 0 {
+                                hwnd
                             } else {
-                                let resp = ServerEvent {
-                                    event: "window_closed".into(),
-                                    status: "error".into(),
-                                    message: Some("未找到目標視窗 HWND".into()),
-                                    data: None,
-                                };
-                                let _ = ctrl_tx.send(serde_json::to_string(&resp)?).await;
+                                let cur = self.resolve_target_hwnd(None);
+                                if cur != 0 {
+                                    Some(cur)
+                                } else {
+                                    None
+                                }
+                            };
+                            let timeout = timeout_ms.unwrap_or(2500);
+                            match DesktopManager::close_app(target_h, pid, force, timeout) {
+                                Ok(res) => {
+                                    if let Some(h) = res.hwnd {
+                                        if self.target_hwnd.load(Ordering::Relaxed) == h {
+                                            self.target_hwnd.store(0, Ordering::SeqCst);
+                                        }
+                                    }
+                                    self.needs_refresh.store(true, Ordering::Relaxed);
+                                    let resp = ServerEvent {
+                                        event: "window_closed".into(),
+                                        status: "ok".into(),
+                                        message: Some(format!(
+                                            "視窗已關閉 (HWND: {:?}, PID: {:?}, Force: {})",
+                                            res.hwnd.map(|h| format!("0x{:X}", h)),
+                                            res.pid,
+                                            res.forced
+                                        )),
+                                        data: Some(serde_json::to_value(&res)?),
+                                    };
+                                    let _ = ctrl_tx.send(serde_json::to_string(&resp)?).await;
+                                }
+                                Err(e) => {
+                                    let resp = ServerEvent {
+                                        event: "window_closed".into(),
+                                        status: "error".into(),
+                                        message: Some(e),
+                                        data: None,
+                                    };
+                                    let _ = ctrl_tx.send(serde_json::to_string(&resp)?).await;
+                                }
                             }
                         }
                         Err(e) => {
