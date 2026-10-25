@@ -451,11 +451,11 @@ def main():
     # launch
     p_launch = subparsers.add_parser("launch", help="啟動應用程式並支援直接派駐至虛擬第二螢幕 (0 彈窗干擾)")
     p_launch.add_argument("path", help="可執行檔路徑或指令名稱 (如: 'notepad.exe', 'C:\\...\\app.exe')")
-    p_launch.add_argument("-a", "--args", nargs="*", default=[], help="傳遞給應用程式的參數清單")
+    p_launch.add_argument("-a", "--args", default="", help="傳遞給應用程式的參數字串 (如: '--force-renderer-accessibility https://...')")
     p_launch.add_argument("--screen", choices=["virtual", "primary"], default="virtual", help="目標顯示螢幕 (預設 virtual 虛擬第二螢幕)")
     p_launch.add_argument("--working-dir", help="指定工作目錄")
     p_launch.add_argument("--no-wait", action="store_true", help="不等待頂層視窗建立立即返回")
-    p_launch.add_argument("--timeout", type=int, default=5000, help="等待視窗超時毫秒數 (預設 5000)")
+    p_launch.add_argument("--timeout", type=int, default=8000, help="等待視窗超時毫秒數 (預設 8000)")
 
     # close
     p_close = subparsers.add_parser("close", help="關閉目標視窗或結束進程 (先優雅 WM_CLOSE，可選 --force 強殺)")
@@ -840,17 +840,20 @@ def main():
                 sys.exit(1)
 
     elif args.command == "launch":
+        import shlex
+        parsed_args = shlex.split(args.args) if isinstance(args.args, str) and args.args.strip() else (args.args if isinstance(args.args, list) else [])
         cmd = {
             "action": "launch",
             "path": args.path,
-            "args": args.args,
+            "args": parsed_args,
             "target_screen": args.screen,
             "wait_for_window": not args.no_wait,
             "timeout_ms": args.timeout,
         }
         if args.working_dir:
             cmd["working_dir"] = args.working_dir
-        res = asyncio.run(send_cmd(cmd, wait_for_event="app_launched"))
+        timeout_val = max(15.0, (args.timeout / 1000.0) + 5.0)
+        res = asyncio.run(send_cmd(cmd, wait_for_event="app_launched", timeout=timeout_val))
         if res and res.get("status") == "ok":
             data = res.get("data", {})
             h_val = data.get("hwnd")
@@ -875,7 +878,8 @@ def main():
         if args.target:
             val = parse_hwnd(args.target)
             cmd["hwnd"] = val
-        res = asyncio.run(send_cmd(cmd, wait_for_event="window_closed"))
+        timeout_val = max(8.0, (args.timeout / 1000.0) + 4.0)
+        res = asyncio.run(send_cmd(cmd, wait_for_event="window_closed", timeout=timeout_val))
         if res and res.get("status") == "ok":
             data = res.get("data", {})
             h_val = data.get("hwnd")
