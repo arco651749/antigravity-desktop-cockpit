@@ -6,6 +6,7 @@
 </p>
 
 <p align="center">
+  <img src="https://img.shields.io/badge/Powered%20by-RustDesk-red?logo=rust&logoColor=white" alt="Powered by RustDesk" />
   <img src="https://img.shields.io/badge/Platform-Windows%2010%20%7C%2011-blue?logo=windows" alt="Platform" />
   <img src="https://img.shields.io/badge/Core-Rust%20(DXGI%20%2B%20Tokio)-orange?logo=rust" alt="Rust" />
   <img src="https://img.shields.io/badge/Latency-%3C15ms%20%40%2060FPS-brightgreen" alt="Latency" />
@@ -131,9 +132,15 @@ python.exe -X utf8 cockpit_cli.py close 0x1A02E
 ## 🤝 參與貢獻 (Contributing)
 
 歡迎提交 Issue 與 Pull Request！
-- 核心引擎：`engine/` (Rust)
+- 核心引擎：`engine/` (Rust, Powered by **RustDesk** 原生高效架構與 DXGI 擷取技術)
 - 前端面板：`sidecars/panel/` (HTML5 / TypeScript)
 - AI 介面：`skills/desktop-cockpit/` (Python CLI)
+
+---
+
+## 🙏 致敬與致謝 (Acknowledgments)
+
+本專案在底層硬體截圖、Windows 虛擬顯示器 (Virtual Display) 拓撲以及極致低延遲串流技術上，深度借鏡與汲取了開源遠端桌面旗艦 **[RustDesk](https://github.com/rustdesk/rustdesk)** 的優秀設計與實作。感謝 RustDesk 開源社群對 Rust 桌面底層生態的卓越貢獻！
 
 ---
 
