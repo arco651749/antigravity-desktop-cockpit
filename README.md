@@ -15,25 +15,89 @@
   <img src="https://img.shields.io/badge/PRs-Welcome-brightgreen" alt="PRs Welcome" />
 </p>
 
-> **專為 AI Agent Computer-Use 與桌面 GUI 自動化設計的高效能沙盒**  
-> 透過 Windows 虛擬第二螢幕（Virtual Display Driver）結合純 Rust 高效能串流引擎（DXGI + SIMD JPEG），讓 AI Agent 在完全不干擾人類、實體滑鼠 0 位移、0 彈窗搶焦點的前提下，實現對桌面應用程式（WPF, Avalonia, Qt, WinForms, Chrome, Office 等）的完整生命週期操控與精準驗收。
+<p align="center">
+  <a href="#english-overview"><b>English</b></a> | <a href="#繁體中文說明"><b>繁體中文</b></a>
+</p>
 
 ---
 
-## ⚡ 痛點對比 (Why Desktop Cockpit?)
+<a name="english-overview"></a>
+## 🌐 English Overview
+
+> **High-Performance Isolated Sandbox for AI Agent Computer-Use & Desktop GUI Automation**  
+> Powered by **RustDesk** core streaming primitives, Windows Virtual Display Driver, and a high-efficiency Rust engine (DXGI zero-copy capture + SIMD JPEG), **Desktop Cockpit (ADC)** enables AI Agents to operate desktop applications (WPF, Avalonia, Qt, WinForms, Chrome, Office, etc.) with **ZERO mouse cursor movement on your primary screen and ZERO pop-up window interruptions**.
+
+### ⚡ Feature Comparison (Why Desktop Cockpit?)
+
+| Feature | Traditional Automation (PyAutoGUI / Scripts) | Virtual Machines (VM / Docker) | **Antigravity Desktop Cockpit (ADC)** |
+| :--- | :--- | :--- | :--- |
+| **Physical Mouse Interference** | ❌ **High** (Cursor jumps around, interrupts work) | ✔ Isolated (Heavyweight) | 🌟 **100% Zero Interference** (Virtual screen sandbox) |
+| **Pop-up Focus Hijacking** | ❌ Windows flash & steal active typing focus | ✔ Isolated | 🌟 **100% Zero Disruption** (`STARTUPINFO` off-screen spawn) |
+| **Resource Footprint** | Lightweight but fragile | ❌ Gigabytes of RAM, slow boot | 🌟 **Ultra-Lightweight** (~15MB RAM, <2% CPU) |
+| **Perception Precision** | ❌ Vision-only clicks drift easily | Tool dependent | 🌟 **Dual-Loop** (UIA semantic tree + 60FPS DXGI capture) |
+| **End-to-End Latency** | 100ms ~ 500ms | 50ms ~ 150ms | 🌟 **< 15ms** (Native Rust compiled) |
+| **Ready-to-Use** | Requires complex desktop setup | Requires VM setup | 🌟 **One-command CLI / WebSocket RPC** |
+
+### 🌟 Key Highlights
+
+1. **Zero-Mouse-Stealing & Zero Pop-Up Disruption**:
+   - Target applications run on an isolated virtual secondary monitor ($X \ge 3200$).
+   - You can code, game, and type on your primary display while the AI Agent autonomously launches, tests, and verifies GUI apps off-screen.
+2. **Powered by RustDesk & Native Rust Engine (`gui-stream-engine`)**:
+   - Built on RustDesk's proven desktop streaming architectures.
+   - Sub-15ms end-to-end latency, 60 FPS DXGI Desktop Duplication, SIMD-accelerated JPEG encoding, binary size under ~980 KB.
+3. **Dual-Loop Perception (UIA + Vision)**:
+   - Built-in Windows UI Automation (UIA) tree crawler resolves element names and normalized `(u, v)` click coordinates instantly.
+   - Pairs with hardware-level DXGI frame capture and Visual Memory diffing to prevent misclicks.
+4. **Full Application Lifecycle Management**:
+   - `launch`: Spawns GUI apps directly into the virtual screen.
+   - `close`: Two-stage exit strategy (graceful `WM_CLOSE` first, optional `--force` terminate on timeout).
+5. **Human-First Override**:
+   - Integrates directly with the Antigravity Auxiliary Pane sidebar. Humans can interact directly on the live canvas at any time; AI automatically yields priority for 1.5s.
+
+---
+
+### 🚀 Quick Start (English)
+
+```powershell
+# 1. Launch target GUI app off-screen (zero pop-up disruption)
+python.exe -X utf8 cockpit_cli.py launch "notepad.exe"
+
+# 2. Inspect element semantics and normalized (u, v) coordinates
+python.exe -X utf8 cockpit_cli.py uia --hwnd 0x1A02E -f "OK"
+
+# 3. Mouse click & keyboard injection
+python.exe -X utf8 cockpit_cli.py mouse click 0.5 0.5 --hwnd 0x1A02E
+python.exe -X utf8 cockpit_cli.py type "Hello from AI Agent!" --hwnd 0x1A02E
+python.exe -X utf8 cockpit_cli.py hotkey "ctrl+s" --hwnd 0x1A02E
+
+# 4. Instant DXGI hardware screenshot verification
+python.exe -X utf8 cockpit_cli.py capture -o "screenshot.jpg" --hwnd 0x1A02E
+
+# 5. Gracefully close window
+python.exe -X utf8 cockpit_cli.py close 0x1A02E
+```
+
+---
+
+<a name="繁體中文說明"></a>
+## 🇹🇼 繁體中文說明
+
+> **專為 AI Agent Computer-Use 與桌面 GUI 自動化設計的高效能沙盒**  
+> 核心深度借鏡 **RustDesk** 旗艦級串流架構，結合 Windows 虛擬顯示器驅動（Virtual Display Driver）與純 Rust 高效能串流引擎（DXGI 零拷貝提取 + SIMD JPEG），讓 AI Agent 在完全不干擾人類、實體滑鼠 0 位移、0 彈窗搶焦點的前提下，實現對桌面應用程式（WPF, Avalonia, Qt, WinForms, Chrome, Office 等）的完整生命週期操控與精準驗收。
+
+### ⚡ 痛點對比 (Why Desktop Cockpit?)
 
 | 特性 | 傳統 AI 桌面自動化 (PyAutoGUI / 傳統腳本) | 專用虛擬機 (VM / Docker) | **Antigravity Desktop Cockpit (ADC)** |
 | :--- | :--- | :--- | :--- |
 | **實體滑鼠干擾** | ❌ **強烈干擾** (游標亂跳、打斷人類工作) | ✔ 隔離 (但開銷極大) | 🌟 **完全 0 干擾** (虛擬第二螢幕沙盒) |
-| **彈窗焦點搶奪** | ❌ 視窗閃爍、打斷當前打字輸入 | ✔ 隔離 | 🌟 **完全 0 彈窗** (STARTUPINFO 離屏生成) |
+| **彈窗焦點搶奪** | ❌ 視窗閃爍、打斷當前打字輸入 | ✔ 隔離 | 🌟 **完全 0 彈窗** (`STARTUPINFO` 離屏生成) |
 | **資源消耗** | 輕量但脆弱 | ❌ 佔用數 GB 記憶體、開機緩慢 | 🌟 **極度輕量** (~15MB RAM, <2% CPU) |
 | **感知與定位精度** | ❌ 純視覺截圖易飄移、易受解析度影響 | 視工具而定 | 🌟 **雙重閉環** (UIA 語意樹精準點擊 + 60FPS DXGI 截圖) |
 | **端到端延遲** | 100ms ~ 500ms | 50ms ~ 150ms | 🌟 **< 15ms** (純 Rust 原生編譯) |
 | **隨開即用** | 需手動佈局環境 | 需虛擬化支援 | 🌟 **一鍵 CLI / RPC 隨開即用** |
 
----
-
-## 🌟 核心特色
+### 🌟 核心特色
 
 1. **實體滑鼠 0 位移、0 搶奪焦點 (Zero-Mouse-Stealing)**：
    - 所有目標受控程式均在獨立的虛擬第二螢幕執行。
@@ -52,23 +116,23 @@
 
 ---
 
-## 🏗️ 系統架構
+## 🏗️ 系統架構 (System Architecture)
 
 ```mermaid
 graph LR
-    subgraph Host["Windows Host (人機共生環境)"]
-        subgraph Primary["主螢幕 (人類工作區)"]
-            User["👨‍💻 人類開發者<br/>(寫程式 / 辦公 / 正常操作滑鼠鍵盤)"]
-            IDE["Antigravity IDE<br/>(側邊欄即時監控畫面)"]
+    subgraph Host["Windows Host (人機共生環境 / Co-Existence)"]
+        subgraph Primary["主螢幕 (Primary Display: Human Workspace)"]
+            User["👨‍💻 人類開發者 / Developer<br/>(寫程式 / 辦公 / 正常操作滑鼠鍵盤)"]
+            IDE["Antigravity IDE<br/>(側邊欄即時監控畫面 / Sidebar Stream)"]
         end
 
-        subgraph Virtual["虛擬第二螢幕 (AI 操控沙盒)"]
-            TargetApp["受控 GUI 應用程式<br/>(WPF / Avalonia / Qt / Chrome)"]
+        subgraph Virtual["虛擬第二螢幕 (Virtual Display: AI Sandbox)"]
+            TargetApp["受控 GUI 應用程式 / Target App<br/>(WPF / Avalonia / Qt / Chrome)"]
         end
     end
 
     subgraph Core["Rust 串流核心 (gui-stream-engine)"]
-        DXGI["DXGI 零拷貝擷取"]
+        DXGI["DXGI 零拷貝擷取<br/>(Powered by RustDesk)"]
         UIA["UIA 語意感知樹"]
         Inject["Win32 SendInput 注入"]
     end
@@ -85,7 +149,7 @@ graph LR
 
 ---
 
-## 🚀 快速上手 (Quick Start)
+## 🚀 快速上手 (Quick Start - 中文)
 
 ### 1. 啟動 GUI 應用程式 (0 彈窗干擾)
 ```powershell
@@ -122,7 +186,7 @@ python.exe -X utf8 cockpit_cli.py close 0x1A02E
 
 ---
 
-## 📚 延伸文件
+## 📚 延伸文件 (Documentation)
 
 - [API 參考手冊 (API Reference)](./API_REFERENCE.md)：完整的 WebSocket JSON 協議、全指令 Schema 與 Python/Node.js 調用範例。
 - [AI Skill 規範 (SKILL.md)](./skills/desktop-cockpit/SKILL.md)：AI Agent 操作指引與最佳實踐。
