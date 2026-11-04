@@ -209,20 +209,31 @@ flowchart LR
 
 ---
 
-## 5. 語意感知 (UIA) 與視覺記憶差異比對 (`diff`)
+## 5. 語意感知 (`uia` @Ref 快照)、語意動作鏈 (`act` / `fill`) 與視覺記憶差異比對 (`diff`)
 
-### A. 一般應用（Chrome、Firefox、Notepad、系統視窗）
-支援標準 Windows UI Automation 語意樹搜尋：
+### A. `@Ref` 結構化快照與雙軌語意操控（推薦優先使用）
+底層 Rust 引擎內建 **`IUIAutomationCacheRequest` 批次預取**、**Chromium/Electron 透明容器自動穿透 (Web Wrapper Skip)** 與 **`CUIAutomation8` 防假死保護**。每次執行 `uia` 快照時，系統會自動為所有可互動控制項分配短代號（`@1`, `@2`, `@3`...），節省 75% 以上 Token 並消除浮點座標幻覺：
+
 ```powershell
-# 搜尋帶有「搜尋」關鍵字的按鈕或文字方塊，自動輸出歸一化 (u, v) 與一鍵點擊提示
+# 1. 取得目標視窗的精簡 @Ref 語意清單（預設自動穿透空白 Pane/Group）
+python.exe -X utf8 "D:\Users\arco0\.gemini\config\plugins\antigravity-desktop-cockpit\skills\desktop-cockpit\scripts\cockpit_cli.py" uia --hwnd 0x704C4
+
+# 2. 搜尋帶有「搜尋」或特定名稱的控制項，自動輸出對應 @Ref 與歸一化 (u, v)
 python.exe -X utf8 "D:\Users\arco0\.gemini\config\plugins\antigravity-desktop-cockpit\skills\desktop-cockpit\scripts\cockpit_cli.py" uia --hwnd 0x704C4 -f "搜尋"
 
-# 輸出節點類型分布統計概覽
-python.exe -X utf8 "D:\Users\arco0\.gemini\config\plugins\antigravity-desktop-cockpit\skills\desktop-cockpit\scripts\cockpit_cli.py" uia --hwnd 0x704C4 -s
+# 3. 語意觸發 (act)：優先呼叫 InvokePattern -> Toggle -> Select -> Expand -> LegacyIAccessible；若為無 Pattern 控制項則自動降級為 (u, v) 虛擬游標點擊！
+python.exe -X utf8 "D:\Users\arco0\.gemini\config\plugins\antigravity-desktop-cockpit\skills\desktop-cockpit\scripts\cockpit_cli.py" act @1 --hwnd 0x704C4
+
+# 4. 瞬間語意填值 (fill)：優先呼叫 ValuePattern::SetValue (0ms 瞬間完成並驗證)；若控制項不支援 ValuePattern 則自動降級為聚焦 + WM_CHAR 安全注入！
+python.exe -X utf8 "D:\Users\arco0\.gemini\config\plugins\antigravity-desktop-cockpit\skills\desktop-cockpit\scripts\cockpit_cli.py" fill @3 "欲輸入的文字" --hwnd 0x704C4
+
+# 5. 切換核取方塊/開關 (toggle) 或展開/收合選單 (expand / collapse)
+python.exe -X utf8 "D:\Users\arco0\.gemini\config\plugins\antigravity-desktop-cockpit\skills\desktop-cockpit\scripts\cockpit_cli.py" toggle @2 --hwnd 0x704C4
+python.exe -X utf8 "D:\Users\arco0\.gemini\config\plugins\antigravity-desktop-cockpit\skills\desktop-cockpit\scripts\cockpit_cli.py" expand @4 --hwnd 0x704C4
 ```
 
 ### B. 視覺記憶差異比對 (`diff`)
-自動比對當前桌面與前一次快照之差異，專門用於秒級辨識新彈窗、報錯對話框或動態元素：
+自動比對當前桌面與前一次快照之差異（包含新彈出對話框 `#32770`、新增/移除之 `@Ref` 控制項，以及 `Value` / `ToggleState` / `ExpandState` / `IsEnabled` 狀態變化）：
 ```powershell
 python.exe -X utf8 "D:\Users\arco0\.gemini\config\plugins\antigravity-desktop-cockpit\skills\desktop-cockpit\scripts\cockpit_cli.py" diff
 ```

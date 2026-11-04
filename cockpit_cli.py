@@ -435,14 +435,45 @@ def main():
     p_url.add_argument("--hwnd", help="可選特定瀏覽器 HWND")
 
     # uia
-    p_uia = subparsers.add_parser("uia", help="取得目標視窗之 UIA 語意樹")
-    p_uia.add_argument("-d", "--depth", type=int, default=8, help="遍歷深度 (預設 8)")
+    p_uia = subparsers.add_parser("uia", help="取得目標視窗之 UIA 語意樹 (預設輸出精簡 @Ref 清單)")
+    p_uia.add_argument("-d", "--depth", type=int, default=8, help="邏輯遍歷深度 (預設 8，自動穿透透明容器)")
     p_uia.add_argument("--hwnd", help="可選視窗 HWND")
-    p_uia.add_argument("-f", "--find", help="搜尋特定名稱、控制項類型或 ID 之節點")
+    p_uia.add_argument("-f", "--find", help="搜尋特定名稱、控制項類型、@Ref 或 ID 之節點")
     p_uia.add_argument("-s", "--summary", action="store_true", help="輸出精簡概覽與統計資訊")
+    p_uia.add_argument("-j", "--json", action="store_true", help="輸出原始完整 JSON 結構")
+
+    # act (語意動作鏈：Invoke -> Toggle -> Select -> Expand -> 自動降級 (u, v) 點擊)
+    p_act = subparsers.add_parser("act", aliases=["invoke"], help="透過 @Ref 或名稱執行語意觸發 (優先 COM Pattern，失敗自動降級虛擬游標點擊)")
+    p_act.add_argument("target", help="目標 @Ref (如 '@1') 或控制項名稱/AutomationId (如 '儲存')")
+    p_act.add_argument("--hwnd", help="可選特定視窗 HWND")
+    p_act.add_argument("--no-fallback", action="store_true", help="若無對應 COM Pattern 時不自動回退至 (u, v) 座標點擊")
+
+    # fill (語意填值鏈：ValuePattern -> RangeValue -> Legacy -> 自動降級聚焦 + WM_CHAR 輸入)
+    p_fill = subparsers.add_parser("fill", aliases=["set-value"], help="透過 @Ref 或名稱向輸入框/滑桿瞬間寫入文字或數值")
+    p_fill.add_argument("target", help="目標 @Ref (如 '@3') 或控制項名稱/AutomationId")
+    p_fill.add_argument("text", nargs="?", default="", help="欲寫入的文字字串或數值 (省略則清空)")
+    p_fill.add_argument("--hwnd", help="可選特定視窗 HWND")
+    p_fill.add_argument("--append", action="store_true", help="降級為 WM_CHAR 輸入時不先執行 Ctrl+A 清空")
+    p_fill.add_argument("--no-fallback", action="store_true", help="若不支援 ValuePattern 時不自動降級為 WM_CHAR 輸入")
+
+    # toggle
+    p_toggle = subparsers.add_parser("toggle", help="透過 @Ref 或名稱切換核取方塊/開關狀態 (TogglePattern)")
+    p_toggle.add_argument("target", help="目標 @Ref (如 '@2') 或控制項名稱")
+    p_toggle.add_argument("--hwnd", help="可選特定視窗 HWND")
+
+    # expand / collapse / focus
+    p_expand = subparsers.add_parser("expand", help="展開指定選單、下拉框或樹狀節點 (ExpandCollapsePattern)")
+    p_expand.add_argument("target", help="目標 @Ref 或名稱")
+    p_expand.add_argument("--hwnd", help="可選特定視窗 HWND")
+
+    p_collapse = subparsers.add_parser("collapse", help="收合指定選單、下拉框或樹狀節點 (ExpandCollapsePattern)")
+    p_collapse.add_argument("target", help="目標 @Ref 或名稱")
+    p_collapse.add_argument("--hwnd", help="可選特定視窗 HWND")
 
     # diff
-    p_diff = subparsers.add_parser("diff", help="比對 Visual Memory 快照差異")
+    p_diff = subparsers.add_parser("diff", help="比對 Visual Memory 快照差異 (含視窗、@Ref 節點新增/移除/狀態與數值變化)")
+    p_diff.add_argument("--hwnd", help="可選特定視窗 HWND (預設使用目前鎖定視窗)")
+    p_diff.add_argument("-j", "--json", action="store_true", help="輸出原始 JSON")
 
     # display
     p_display = subparsers.add_parser("display", help="控制或查詢虛擬顯示器硬體狀態 (0 批次檔、0 UAC 彈窗)")
@@ -730,78 +761,305 @@ def main():
         if args.hwnd:
             cmd["hwnd"] = parse_hwnd(args.hwnd)
         res = asyncio.run(send_cmd(cmd, wait_for_event="uia_tree"))
+        if not res or res.get("status") == "error":
+            msg = res.get("message") if isinstance(res, dict) else "無法取得 UIA 樹"
+            print(f"[ERROR] UIA 掃描失敗: {msg}")
+            sys.exit(1)
+
         tree = res.get("data", {}) if isinstance(res, dict) else {}
+
+        if args.json:
+            print(json.dumps(res, ensure_ascii=False, indent=2))
+            return
 
         mons = list_system_monitors()
         vm = next((m for m in mons if not m["primary"]), None)
+        pm = next((m for m in mons if m["primary"]), None)
+        root_rect = tree.get("bounding_rect", [0, 0, 0, 0])
 
         def calc_uv(cx, cy):
             if vm and vm["width"] > 0 and vm["height"] > 0:
-                u = round((cx - vm["x"]) / vm["width"], 4)
-                v = round((cy - vm["y"]) / vm["height"], 4)
-                return u, v
+                if vm["x"] <= cx <= vm["x"] + vm["width"] and vm["y"] <= cy <= vm["y"] + vm["height"]:
+                    return round((cx - vm["x"]) / vm["width"], 4), round((cy - vm["y"]) / vm["height"], 4)
+            if root_rect and len(root_rect) == 4 and root_rect[2] > 0 and root_rect[3] > 0:
+                if root_rect[0] <= cx <= root_rect[0] + root_rect[2] and root_rect[1] <= cy <= root_rect[1] + root_rect[3]:
+                    if vm and vm["width"] > 0 and vm["height"] > 0 and root_rect[0] >= vm["x"] - 50:
+                        return round((cx - vm["x"]) / vm["width"], 4), round((cy - vm["y"]) / vm["height"], 4)
+                    return round((cx - root_rect[0]) / root_rect[2], 4), round((cy - root_rect[1]) / root_rect[3], 4)
+            if pm and pm["width"] > 0 and pm["height"] > 0:
+                return round((cx - pm["x"]) / pm["width"], 4), round((cy - pm["y"]) / pm["height"], 4)
             return None, None
 
-        if args.find or args.summary:
-            all_nodes = []
-            matches = []
+        all_nodes = []
+        ref_nodes = []
+        matches = []
 
-            def walk(node, depth=0):
-                name = node.get("name", "").strip()
-                ctype = node.get("control_type", "")
-                rect = node.get("bounding_rect", [0, 0, 0, 0])
-                center = node.get("center_point", [0, 0])
-                cid = node.get("id", "")
+        def walk(node, depth=0):
+            ref_id = node.get("ref_id")
+            name = node.get("name", "").strip()
+            ctype = node.get("control_type", "")
+            rect = node.get("bounding_rect", [0, 0, 0, 0])
+            center = node.get("center_point", [0, 0])
+            cid = node.get("id", "")
+            val = node.get("value")
+            tog = node.get("toggle_state")
+            exp = node.get("expand_state")
+            sel = node.get("is_selected")
+            focused = node.get("is_focused", False)
+            enabled = node.get("is_enabled", True)
+            pats = node.get("supported_patterns", [])
 
-                has_size = rect and len(rect) == 4 and rect[2] > 0 and rect[3] > 0
-                if name or has_size:
-                    u, v = calc_uv(center[0], center[1]) if center and len(center) == 2 else (None, None)
-                    item = {
-                        "depth": depth, "type": ctype, "name": name,
-                        "rect": rect, "center": center, "id": cid,
-                        "u": u, "v": v
-                    }
-                    all_nodes.append(item)
+            has_size = rect and len(rect) == 4 and rect[2] > 0 and rect[3] > 0
+            if name or has_size or ref_id:
+                u, v = calc_uv(center[0], center[1]) if center and len(center) == 2 else (None, None)
+                state_parts = []
+                if val is not None:
+                    v_disp = val if len(str(val)) <= 24 else str(val)[:21] + "..."
+                    state_parts.append(f'val="{v_disp}"')
+                if tog is not None:
+                    state_parts.append(f"toggle={tog}")
+                if exp is not None:
+                    state_parts.append(f"{exp}")
+                if sel is True:
+                    state_parts.append("Selected")
+                if focused:
+                    state_parts.append("FOCUSED")
+                if not enabled:
+                    state_parts.append("DISABLED")
 
-                    if args.find:
-                        kw = args.find.lower()
-                        if kw in name.lower() or kw in ctype.lower() or kw in cid.lower():
-                            matches.append(item)
+                item = {
+                    "ref": ref_id or "-",
+                    "depth": depth,
+                    "type": ctype,
+                    "name": name,
+                    "rect": rect,
+                    "center": center,
+                    "id": cid,
+                    "u": u,
+                    "v": v,
+                    "state": ", ".join(state_parts) if state_parts else "-",
+                    "patterns": pats,
+                }
+                all_nodes.append(item)
+                if ref_id:
+                    ref_nodes.append(item)
 
-                for child in node.get("children", []):
-                    walk(child, depth + 1)
+                if args.find:
+                    kw = args.find.lower()
+                    if (
+                        kw in name.lower()
+                        or kw in ctype.lower()
+                        or kw in cid.lower()
+                        or (ref_id and kw == ref_id.lower())
+                    ):
+                        matches.append(item)
 
-            walk(tree)
+            for child in node.get("children", []):
+                walk(child, depth + 1)
 
-            if args.find:
-                print(f"[UIA-FIND] 關鍵字 '{args.find}' 搜尋結果 (共 {len(matches)} 筆匹配):")
-                print("-" * 115)
-                print(f"{'深度':<4} | {'類型':<12} | {'中心點 (X, Y)':<15} | {'歸一化 (u, v)':<17} | {'名稱 / 標籤'}")
-                print("-" * 115)
-                for item in matches:
-                    cent_str = f"({item['center'][0]},{item['center'][1]})" if item['center'] else "-"
-                    uv_str = f"({item['u']}, {item['v']})" if item['u'] is not None else "-"
-                    name_display = item['name'][:55] if item['name'] else f"[ID: {item['id']}]"
-                    print(f"{item['depth']:<4} | {item['type']:<12} | {cent_str:<15} | {uv_str:<17} | {name_display}")
-                print("-" * 115)
-                if matches and matches[0]['u'] is not None:
-                    m0 = matches[0]
-                    print(f"💡 快速點擊提示: python.exe cockpit_cli.py mouse click {m0['u']} {m0['v']}")
-            elif args.summary:
-                from collections import Counter
-                ctls = Counter(n["type"] for n in all_nodes)
-                print(f"[UIA-SUMMARY] 節點總數: {len(all_nodes)}")
-                print("控制項類型分布:")
-                for ctl, count in ctls.most_common(12):
-                    print(f"  - {ctl:<16}: {count}")
-                named = [n for n in all_nodes if n["name"]]
-                print(f"具備文字語意名稱節點數: {len(named)}")
+        walk(tree)
+
+        if args.find:
+            print(f"[UIA-FIND] 關鍵字 '{args.find}' 搜尋結果 (共 {len(matches)} 筆匹配):")
+            print("-" * 122)
+            print(f"{'Ref':<6} | {'深度':<4} | {'類型':<12} | {'歸一化 (u, v)':<17} | {'狀態 / 值':<22} | {'名稱 / 標籤 [動作]'}")
+            print("-" * 122)
+            for item in matches:
+                uv_str = f"({item['u']}, {item['v']})" if item['u'] is not None else "-"
+                name_display = item['name'][:42] if item['name'] else (f"[ID: {item['id']}]" if item['id'] else "-")
+                pats_str = f" [{','.join(item['patterns'])}]" if item['patterns'] else ""
+                print(f"{item['ref']:<6} | {item['depth']:<4} | {item['type']:<12} | {uv_str:<17} | {item['state'][:22]:<22} | {name_display}{pats_str}")
+            print("-" * 122)
+            if matches:
+                m0 = matches[0]
+                if m0["ref"] != "-":
+                    print(f"💡 語意觸發提示: python.exe -X utf8 cockpit_cli.py act {m0['ref']}")
+                elif m0["u"] is not None:
+                    print(f"💡 座標點擊提示: python.exe -X utf8 cockpit_cli.py mouse click {m0['u']} {m0['v']}")
+        elif args.summary:
+            from collections import Counter
+            ctls = Counter(n["type"] for n in all_nodes)
+            print(f"[UIA-SUMMARY] 節點總數: {len(all_nodes)} | 可互動 @Ref 總數: {len(ref_nodes)}")
+            print("控制項類型分布:")
+            for ctl, count in ctls.most_common(12):
+                print(f"  - {ctl:<16}: {count}")
+            named = [n for n in all_nodes if n["name"]]
+            print(f"具備文字語意名稱節點數: {len(named)}")
         else:
-            print(json.dumps(res, ensure_ascii=False, indent=2))
+            win_title = tree.get("name", "未知視窗")
+            print(f"[UIA-SNAPSHOT] 視窗: \"{win_title}\" | 總節點: {len(all_nodes)} | 可互動 @Ref: {len(ref_nodes)}")
+            if not ref_nodes:
+                print("⚠️ 此視窗無可互動的 UIA @Ref 控制項（可能為 Blender/CAD/自繪 Canvas），請改用 `capture` + `mouse click <u, v>` 操控。")
+                for item in all_nodes[:10]:
+                    uv_str = f"({item['u']}, {item['v']})" if item['u'] is not None else "-"
+                    print(f"  - [{item['type']}] \"{item['name']}\" uv={uv_str}")
+            else:
+                print("-" * 122)
+                print(f"{'Ref':<6} | {'類型':<12} | {'歸一化 (u, v)':<17} | {'狀態 / 當前值':<24} | {'名稱 / ID [支援 Pattern]'}")
+                print("-" * 122)
+                for item in ref_nodes:
+                    uv_str = f"({item['u']}, {item['v']})" if item['u'] is not None else "-"
+                    label = f"\"{item['name'][:40]}\"" if item['name'] else (f"[ID:{item['id'][:30]}]" if item['id'] else "(無標籤)")
+                    pats_str = f" [{','.join(item['patterns'])}]" if item['patterns'] else ""
+                    print(f"{item['ref']:<6} | {item['type']:<12} | {uv_str:<17} | {item['state'][:24]:<24} | {label}{pats_str}")
+                print("-" * 122)
+                print("💡 操作提示: `cockpit_cli.py act @1` (靜默觸發/自動降級點擊) | `cockpit_cli.py fill @N \"文字\"` (瞬間設值)")
+
+    elif args.command in ("act", "invoke", "fill", "set-value", "toggle", "expand", "collapse"):
+        hwnd = parse_hwnd(args.hwnd) if getattr(args, "hwnd", None) else None
+        if args.command in ("act", "invoke"):
+            subaction = "act"
+            val = None
+        elif args.command in ("fill", "set-value"):
+            subaction = "set_value"
+            val = args.text
+        else:
+            subaction = args.command
+            val = None
+
+        cmd = {
+            "action": "uia_action",
+            "target": args.target,
+            "subaction": subaction,
+        }
+        if hwnd:
+            cmd["hwnd"] = hwnd
+        if val is not None:
+            cmd["value"] = val
+
+        res = asyncio.run(send_cmd(cmd, wait_for_event="uia_action_done"))
+        if not res:
+            print("[ERROR] UIA 動作未收到引擎回應")
+            sys.exit(1)
+
+        status = res.get("status")
+        data = res.get("data", {}) if isinstance(res.get("data"), dict) else {}
+        msg = res.get("message", "")
+
+        if status == "ok":
+            ver_str = f" | 狀態/驗證值: {data.get('verified_value')}" if data.get("verified_value") is not None else ""
+            print(
+                f"[UIA-{subaction.upper()}] ✅ 成功: {data.get('target')} -> "
+                f"[{data.get('control_type')}] \"{data.get('resolved_name')}\" "
+                f"(機制: {data.get('mechanism')}){ver_str}"
+            )
+        elif status == "fallback_required" and not getattr(args, "no_fallback", False):
+            center = data.get("center_point", [0, 0])
+            mons = list_system_monitors()
+            vm = next((m for m in mons if not m["primary"]), None)
+            pm = next((m for m in mons if m["primary"]), None)
+            u_val, v_val = 0.5, 0.5
+            if center and len(center) == 2:
+                cx, cy = center[0], center[1]
+                if vm and vm["width"] > 0 and vm["height"] > 0 and cx >= vm["x"] - 50:
+                    u_val = max(0.0, min(1.0, round((cx - vm["x"]) / vm["width"], 4)))
+                    v_val = max(0.0, min(1.0, round((cy - vm["y"]) / vm["height"], 4)))
+                elif pm and pm["width"] > 0 and pm["height"] > 0:
+                    u_val = max(0.0, min(1.0, round((cx - pm["x"]) / pm["width"], 4)))
+                    v_val = max(0.0, min(1.0, round((cy - pm["y"]) / pm["height"], 4)))
+
+            async def exec_fallback():
+                import websockets
+                async with websockets.connect(WS_URL) as ws:
+                    if hwnd:
+                        await ws.send(json.dumps({"action": "set_window", "hwnd": hwnd}))
+                        await asyncio.sleep(0.08)
+
+                    # 先點擊目標元素中心點以確保聚焦或觸發
+                    await ws.send(json.dumps({
+                        "action": "mouse", "source": "agent", "mode": "direct", "subaction": "move",
+                        "button": "none", "u": u_val, "v": v_val, "delta": 0
+                    }))
+                    await asyncio.sleep(0.12)
+                    await ws.send(json.dumps({
+                        "action": "mouse", "source": "agent", "mode": "direct", "subaction": "click",
+                        "button": "left", "u": u_val, "v": v_val, "delta": 0
+                    }))
+                    await asyncio.sleep(0.10)
+
+                    if subaction == "set_value" and val is not None:
+                        if not getattr(args, "append", False):
+                            # Ctrl+A 全選後輸入新文字覆蓋
+                            await ws.send(json.dumps({
+                                "action": "key", "source": "agent", "mode": "direct", "subaction": "down",
+                                "vk": ord("A"), "ctrl": True, "alt": False, "shift": False
+                            }))
+                            await asyncio.sleep(0.04)
+                            await ws.send(json.dumps({
+                                "action": "key", "source": "agent", "mode": "direct", "subaction": "up",
+                                "vk": ord("A"), "ctrl": True, "alt": False, "shift": False
+                            }))
+                            await asyncio.sleep(0.05)
+                            await ws.send(json.dumps({
+                                "action": "key", "source": "agent", "mode": "direct", "subaction": "down",
+                                "vk": 8, "ctrl": False, "alt": False, "shift": False
+                            }))
+                            await asyncio.sleep(0.03)
+                            await ws.send(json.dumps({
+                                "action": "key", "source": "agent", "mode": "direct", "subaction": "up",
+                                "vk": 8, "ctrl": False, "alt": False, "shift": False
+                            }))
+                            await asyncio.sleep(0.05)
+
+                        t_cmd = {"action": "type_text", "text": val}
+                        if hwnd:
+                            t_cmd["hwnd"] = hwnd
+                        await ws.send(json.dumps(t_cmd))
+                        await asyncio.sleep(0.15)
+                        print(
+                            f"[UIA-FILL] ⚡ {args.target} (\"{data.get('resolved_name')}\") 不支援直接 ValuePattern，"
+                            f"已自動降級執行點擊聚焦 ({u_val}, {v_val}) + WM_CHAR 注入 ({len(val)} 字元)！"
+                        )
+                    else:
+                        print(
+                            f"[UIA-{subaction.upper()}] ⚡ {args.target} (\"{data.get('resolved_name')}\") 未提供靜默 Pattern，"
+                            f"已自動降級執行虛擬游標點擊 ({u_val}, {v_val})！"
+                        )
+
+            asyncio.run(exec_fallback())
+        else:
+            print(f"[ERROR] UIA 動作失敗 ({args.target}): {msg}")
+            sys.exit(1)
 
     elif args.command == "diff":
+        if getattr(args, "hwnd", None):
+            h_val = parse_hwnd(args.hwnd)
+            asyncio.run(send_cmd({"action": "set_window", "hwnd": h_val}, wait_for_event="window_set"))
         res = asyncio.run(send_cmd({"action": "get_visual_diff"}, wait_for_event="visual_diff"))
-        print(json.dumps(res, ensure_ascii=False, indent=2))
+        if getattr(args, "json", False):
+            print(json.dumps(res, ensure_ascii=False, indent=2))
+            return
+        diff = res.get("data") if isinstance(res, dict) else None
+        if not diff:
+            print("[DIFF] 尚無足夠的歷史快照可供比對（請至少執行 2 次 uia 或 diff）。")
+        else:
+            print("[DIFF] Visual Memory 狀態與版面差異比對報告:")
+            add_w = diff.get("added_windows", [])
+            cls_w = diff.get("closed_windows", [])
+            dlg_w = diff.get("new_dialogs", [])
+            add_e = diff.get("added_elements", [])
+            rem_e = diff.get("removed_elements", [])
+            chg_e = diff.get("state_changed_elements", [])
+            if dlg_w:
+                print(f"  🚨 新彈出對話框 ({len(dlg_w)}): " + ", ".join(f"\"{w['title']}\" (0x{w['hwnd']:X})" for w in dlg_w))
+            if add_w:
+                print(f"  ➕ 新增視窗 ({len(add_w)}): " + ", ".join(f"\"{w['title']}\" (0x{w['hwnd']:X})" for w in add_w))
+            if cls_w:
+                print(f"  ➖ 關閉視窗 ({len(cls_w)}): " + ", ".join(f"\"{w['title']}\" (0x{w['hwnd']:X})" for w in cls_w))
+            if chg_e:
+                print(f"  🔄 狀態/數值變更控制項 ({len(chg_e)}):")
+                for c in chg_e[:25]:
+                    print(f"     * {c}")
+            if add_e:
+                print(f"  🆕 新增控制項 ({len(add_e)}):")
+                for a in add_e[:25]:
+                    print(f"     + {a}")
+            if rem_e:
+                print(f"  🗑️ 移除控制項 ({len(rem_e)}):")
+                for r in rem_e[:15]:
+                    print(f"     - {r}")
+            if not any([dlg_w, add_w, cls_w, chg_e, add_e, rem_e]):
+                print("  ✅ 畫面與控制項狀態無變化。")
 
     elif args.command == "display":
         if args.action == "status":

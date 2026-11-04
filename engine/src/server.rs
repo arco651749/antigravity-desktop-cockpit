@@ -55,6 +55,16 @@ pub enum ClientCommand {
         hwnd: Option<isize>,
         name: String,
     },
+    #[serde(rename = "uia_action")]
+    UIAAction {
+        #[serde(default)]
+        hwnd: Option<isize>,
+        target: String,
+        #[serde(default = "default_uia_subaction")]
+        subaction: String,
+        #[serde(default)]
+        value: Option<String>,
+    },
     #[serde(rename = "get_visual_diff")]
     GetVisualDiff,
     #[serde(rename = "set_capture_mode")]
@@ -170,6 +180,9 @@ fn default_button() -> String {
 }
 fn default_mode() -> String {
     "direct".to_string()
+}
+fn default_uia_subaction() -> String {
+    "act".to_string()
 }
 
 #[derive(Debug, Serialize)]
@@ -523,7 +536,7 @@ impl StreamServer {
                             let target_hwnd = self.resolve_target_hwnd(hwnd);
 
                             if target_hwnd != 0 {
-                                match self.uia.fetch_tree_from_hwnd(target_hwnd, depth.unwrap_or(4)) {
+                                match self.uia.fetch_tree_from_hwnd(target_hwnd, depth.unwrap_or(8)) {
                                     Ok(tree) => {
                                         let wins = if is_secret {
                                             DesktopManager::list_windows_in_desktop(&desk_name).unwrap_or_default()
@@ -603,6 +616,47 @@ impl StreamServer {
                                 let _ = ctrl_tx.send(serde_json::to_string(&resp)?).await;
                             }
                         }
+                        Ok(ClientCommand::UIAAction {
+                            hwnd,
+                            target,
+                            subaction,
+                            value,
+                        }) => {
+                            let target_hwnd = self.resolve_target_hwnd(hwnd);
+                            match self.uia.execute_uia_action(
+                                target_hwnd,
+                                &target,
+                                &subaction,
+                                value.as_deref(),
+                            ) {
+                                Ok(act_res) => {
+                                    self.needs_refresh.store(true, Ordering::Relaxed);
+                                    let status_str = if act_res.success {
+                                        "ok"
+                                    } else if act_res.fallback_required {
+                                        "fallback_required"
+                                    } else {
+                                        "error"
+                                    };
+                                    let resp = ServerEvent {
+                                        event: "uia_action_done".into(),
+                                        status: status_str.into(),
+                                        message: Some(act_res.message.clone()),
+                                        data: Some(serde_json::to_value(act_res)?),
+                                    };
+                                    let _ = ctrl_tx.send(serde_json::to_string(&resp)?).await;
+                                }
+                                Err(e) => {
+                                    let resp = ServerEvent {
+                                        event: "uia_action_done".into(),
+                                        status: "error".into(),
+                                        message: Some(e),
+                                        data: None,
+                                    };
+                                    let _ = ctrl_tx.send(serde_json::to_string(&resp)?).await;
+                                }
+                            }
+                        }
                         Ok(ClientCommand::GetVisualDiff) => {
                             let is_secret = *self.capture_mode.read().unwrap() == "secret_desktop";
                             let desk_name = self.isolated_desktop.read().unwrap().clone();
@@ -622,7 +676,7 @@ impl StreamServer {
                             };
                             let target_hwnd = self.resolve_target_hwnd(None);
                             let tree = if target_hwnd != 0 {
-                                self.uia.fetch_tree_from_hwnd(target_hwnd, 3).ok()
+                                self.uia.fetch_tree_from_hwnd(target_hwnd, 8).ok()
                             } else {
                                 None
                             };
