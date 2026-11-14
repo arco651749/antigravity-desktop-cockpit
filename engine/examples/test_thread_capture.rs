@@ -1,6 +1,4 @@
-#[path = "../capture.rs"]
-mod capture;
-use capture::{ensure_default_desktop, DxgiCapturer, WindowCapturer};
+use gui_stream_engine::capture::{ensure_default_desktop, DxgiCapturer, WindowCapturer};
 use std::time::{Duration, Instant};
 
 fn main() {

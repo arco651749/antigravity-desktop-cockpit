@@ -164,20 +164,21 @@ impl WindowEnumerator {
         let width = rect.right - rect.left;
         let height = rect.bottom - rect.top;
 
-        if !trimmed.is_empty() && width > 100 && height > 100 {
-            if trimmed != "Program Manager"
-                && trimmed != "Settings"
-                && trimmed != "Windows Input Experience"
-                && trimmed != "Click to Do"
-                && trimmed != "Microsoft Text Input Application"
-            {
-                list.push(WindowInfo {
-                    hwnd: hwnd.0 as isize,
-                    title: trimmed.to_string(),
-                    width,
-                    height,
-                });
-            }
+        if !trimmed.is_empty()
+            && width > 100
+            && height > 100
+            && trimmed != "Program Manager"
+            && trimmed != "Settings"
+            && trimmed != "Windows Input Experience"
+            && trimmed != "Click to Do"
+            && trimmed != "Microsoft Text Input Application"
+        {
+            list.push(WindowInfo {
+                hwnd: hwnd.0 as isize,
+                title: trimmed.to_string(),
+                width,
+                height,
+            });
         }
 
         BOOL(1)
@@ -188,6 +189,7 @@ impl WindowEnumerator {
 /// 當畫面靜止時，AcquireNextFrame 在 GPU 驅動層逾時，實現真 0.00% CPU 佔用！
 pub struct DxgiCapturer {
     pub display_name: String,
+    #[allow(dead_code)]
     device: ID3D11Device,
     context: ID3D11DeviceContext,
     dupl: IDXGIOutputDuplication,

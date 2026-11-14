@@ -6,15 +6,13 @@ fn main() -> Result<()> {
         let factory: IDXGIFactory1 = CreateDXGIFactory1()?;
         let mut a_idx = 0;
         while let Ok(adapter) = factory.EnumAdapters1(a_idx) {
-            let mut a_desc = DXGI_ADAPTER_DESC1::default();
-            let _ = adapter.GetDesc1(&mut a_desc);
+            let a_desc = adapter.GetDesc1().unwrap_or_default();
             let a_name = String::from_utf16_lossy(&a_desc.Description);
             println!("=== Adapter {}: '{}' ===", a_idx, a_name.trim_matches('\0'));
 
             let mut o_idx = 0;
             while let Ok(output) = adapter.EnumOutputs(o_idx) {
-                let mut o_desc = DXGI_OUTPUT_DESC::default();
-                let _ = output.GetDesc(&mut o_desc);
+                let o_desc = output.GetDesc().unwrap_or_default();
                 let o_name = String::from_utf16_lossy(&o_desc.DeviceName);
                 println!(
                     "  Output {}: '{}', Attached: {}, Coords: {:?}",

@@ -78,7 +78,12 @@ startEngine();
 
 // Serve pages and static files
 app.page('/', () => readFileSync(join(HERE, 'index.html'), 'utf8'));
-app.page('/app.js', () => readFileSync(join(HERE, 'app.js'), 'utf8'));
+for (const jsFile of ['app.js', 'annotator.js', 'input_handler.js']) {
+  app.api(`/${jsFile}`, () =>
+    new Response(readFileSync(join(HERE, jsFile), 'utf8'), { contentType: 'application/javascript' }),
+    'GET'
+  );
+}
 app.api('/styles.css', () =>
   new Response(readFileSync(join(HERE, 'styles.css'), 'utf8'), { contentType: 'text/css' }),
   'GET'

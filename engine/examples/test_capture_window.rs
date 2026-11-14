@@ -1,6 +1,4 @@
-#[path = "../capture.rs"]
-mod capture;
-use capture::WindowCapturer;
+use gui_stream_engine::capture::WindowCapturer;
 
 fn main() {
     let hwnd_val = 0x34071A;

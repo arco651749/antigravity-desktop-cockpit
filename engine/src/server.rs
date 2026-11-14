@@ -189,7 +189,7 @@ impl StreamServer {
                 if capturer_opt.as_ref().map(|c| c.hwnd) != Some(hwnd_val) {
                     // 關鍵修正：必須先將舊的 capturer_opt 設為 None 釋放 IDXGIOutputDuplication，
                     // 否則新建 WindowCapturer 時呼叫 DuplicateOutput 會因 DXGI 單一實例鎖定而失敗！
-                    capturer_opt = None;
+                    drop(capturer_opt.take());
                     let capturer = WindowCapturer::new(hwnd_val);
                     if !capturer.last_jpeg.is_empty() {
                         let frame = capturer.last_jpeg.clone();
