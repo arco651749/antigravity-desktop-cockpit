@@ -3,5 +3,7 @@ pub mod composite_capture;
 pub mod desktop;
 pub mod input;
 pub mod monitor;
+pub mod protocol;
+pub mod router;
 pub mod server;
 pub mod uia;

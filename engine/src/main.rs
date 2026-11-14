@@ -3,6 +3,8 @@ mod composite_capture;
 mod desktop;
 mod input;
 mod monitor;
+mod protocol;
+mod router;
 mod server;
 mod uia;
 
