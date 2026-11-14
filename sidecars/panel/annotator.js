@@ -1,5 +1,5 @@
 // Desktop Cockpit Annotation & Visual Communication Engine
-export function initAnnotator({ canvas, log }) {
+window.initAnnotator = function initAnnotator({ canvas, ctx, consoleLogs, windowSelect, log }) {
   // Annotation & Visual Feedback Elements
   const btnAnnotateToggle = document.getElementById('btnAnnotateToggle');
   const annotCanvas = document.getElementById('annotationCanvas');

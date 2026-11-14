@@ -1,5 +1,16 @@
 // Desktop Cockpit Stream Input Handler (Mouse / Drag / Wheel / Keyboard)
-export function initStreamInput({ canvas, viewport, getWs, getMode, isAnnotating, log, setHumanActive, updateHudStat }) {
+window.initStreamInput = function initStreamInput({
+  canvas,
+  viewport,
+  windowSelect,
+  getWs,
+  getMode,
+  isAnnotating,
+  log,
+  setHumanActive,
+  updateHudStat,
+  handleAiCursorEvent,
+}) {
   // Human input interactions
   function createClickRipple(e, type = 'user') {
     const ripple = document.createElement('div');

@@ -1,6 +1,3 @@
-import { initAnnotator } from '/annotator.js';
-import { initStreamInput } from '/input_handler.js';
-
 // Desktop Cockpit - Frontend Stream Receiver & Input Controller
 const canvas = document.getElementById('streamCanvas');
 const ctx = canvas.getContext('2d');
@@ -498,16 +495,18 @@ if (btnDiff) {
   });
 }
 
-const annotator = initAnnotator({ canvas, log });
-initStreamInput({
+const annotator = window.initAnnotator({ canvas, ctx, consoleLogs, windowSelect, log });
+window.initStreamInput({
   canvas,
   viewport,
+  windowSelect,
   getWs: () => ws,
   getMode,
   isAnnotating: () => annotator.isAnnotating(),
   log,
   setHumanActive,
   updateHudStat,
+  handleAiCursorEvent,
 });
 
 // Initialize connection
